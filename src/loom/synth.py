@@ -2,6 +2,8 @@ import torch
 import torch.nn as nn
 
 from loom.oscillators import AdditiveOscillator
+from loom.wavetable import WavetableOscillator
+from loom.fm import FMOscillator
 from loom.envelope import ADSR
 from loom.filters import BiquadFilter
 from loom.amplifier import VCA
@@ -24,6 +26,8 @@ class SubtractiveSynth(nn.Module):
     def __init__(self, sample_rate: int, n_samples: int):
         super().__init__()
         self.oscillator = AdditiveOscillator(sample_rate, n_samples)
+        self.wavetable_osc = WavetableOscillator(sample_rate, n_samples)
+        self.fm_osc = FMOscillator(sample_rate, n_samples)
         self.amp_envelope = ADSR(sample_rate, n_samples)
         self.filter_envelope = ADSR(sample_rate, n_samples)
         self.filter = BiquadFilter(sample_rate)
@@ -37,10 +41,28 @@ class SubtractiveSynth(nn.Module):
 
     def forward(self, params: dict[str, torch.Tensor]) -> torch.Tensor:
         """Render audio from parameter dictionary."""
-        audio = self.oscillator(
+        additive_out = self.oscillator(
             params["osc_pitch"],
             params["osc_waveform"],
             params["osc_detune"],
+        )
+        wavetable_out = self.wavetable_osc(
+            params["osc_pitch"],
+            params["osc_detune"],
+            params["wt_position"],
+        )
+        fm_out = self.fm_osc(
+            params["osc_pitch"],
+            params["osc_detune"],
+            params["fm_carrier_ratio"],
+            params["fm_mod_ratio"],
+            params["fm_mod_index"],
+        )
+        osc_type = params["osc_type"]  # (batch, 3)
+        audio = (
+            osc_type[:, 0:1] * additive_out
+            + osc_type[:, 1:2] * wavetable_out
+            + osc_type[:, 2:3] * fm_out
         )
 
         filt_env = self.filter_envelope(
