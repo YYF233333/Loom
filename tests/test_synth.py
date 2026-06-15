@@ -86,6 +86,17 @@ class TestSubtractiveSynth:
         audio_b = self.synth(params_b)
         assert not torch.allclose(audio_a, audio_b)
 
+    def test_lfo_wobble_differs_from_static(self):
+        """LFO with depth>0 targeting cutoff should produce different audio."""
+        params_static = self._make_params()
+        params_wobble = self._make_params()
+        params_wobble["lfo_depth"] = torch.full((1,), 0.9, device=DEVICE)
+        params_wobble["lfo_target"] = torch.tensor([[1.0, 0.0, 0.0, 0.0]], device=DEVICE)
+        params_wobble["lfo_rate"] = torch.tensor([0.3], device=DEVICE)
+        audio_s = self.synth(params_static)
+        audio_w = self.synth(params_wobble)
+        assert not torch.allclose(audio_s, audio_w, atol=0.01)
+
     def test_batch_consistency(self):
         """Batched rendering should match individual rendering."""
         params_single = self._make_params(batch=1)
