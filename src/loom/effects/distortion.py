@@ -15,23 +15,19 @@ class Distortion(nn.Module):
     def _denorm_drive(self, amount: torch.Tensor) -> torch.Tensor:
         return amount * (self.MAX_DRIVE - self.MIN_DRIVE) + self.MIN_DRIVE
 
-    def forward(
-        self,
-        signal: torch.Tensor,
-        amount: torch.Tensor,
-        mix: torch.Tensor,
-    ) -> torch.Tensor:
+    def forward(self, signal, amount, mix):
         """Apply distortion.
 
         Args:
             signal: (batch, n_samples) input audio.
-            amount: (batch,) normalized drive [0,1].
+            amount: (batch,) or (batch, n_samples) normalized drive [0,1].
             mix: (batch,) dry/wet [0,1].
-
-        Returns:
-            (batch, n_samples) distorted audio.
         """
-        drive = self._denorm_drive(amount).unsqueeze(1)
-        mix = mix.unsqueeze(1)
+        drive = self._denorm_drive(amount)
+        if drive.dim() == 1:
+            drive = drive.unsqueeze(1)
+        mix_v = mix
+        if mix_v.dim() == 1:
+            mix_v = mix_v.unsqueeze(1)
         wet = torch.tanh(signal * drive)
-        return (1.0 - mix) * signal + mix * wet
+        return (1.0 - mix_v) * signal + mix_v * wet

@@ -47,3 +47,14 @@ class TestDistortion:
         mix = torch.tensor([1.0], device=DEVICE)
         out = self.dist(signal, amount, mix)
         assert out.abs().max().item() <= 1.01
+
+    def test_per_sample_drive(self):
+        """amount can be (batch, n_samples) for time-varying drive."""
+        signal = torch.sin(torch.linspace(0, 100, 1000, device=DEVICE)).unsqueeze(0)
+        amount = torch.linspace(0.0, 1.0, 1000, device=DEVICE).unsqueeze(0)
+        mix = torch.tensor([1.0], device=DEVICE)
+        out = self.dist(signal, amount, mix)
+        assert out.shape == (1, 1000)
+        fft_start = torch.abs(torch.fft.rfft(out[0, :500]))
+        fft_end = torch.abs(torch.fft.rfft(out[0, 500:]))
+        assert fft_end.sum() > fft_start.sum()
