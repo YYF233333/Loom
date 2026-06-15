@@ -8,6 +8,7 @@ import torch
 import numpy as np
 from scipy.io import wavfile
 from loom.synth import SubtractiveSynth
+from loom.sequencer import render_sequence
 from loom.core import SAMPLE_RATE
 
 N_SAMPLES = SAMPLE_RATE * 4  # 4 seconds
@@ -24,6 +25,11 @@ def make_base_params(batch=1):
         "fm_carrier_ratio": torch.full((batch,), 0.0),
         "fm_mod_ratio": torch.full((batch,), 0.0),
         "fm_mod_index": torch.full((batch,), 0.0),
+        "lfo_rate": torch.full((batch,), 0.5),
+        "lfo_depth": torch.full((batch,), 0.0),
+        "lfo_waveform": torch.tensor([[1.0, 0.0, 0.0, 0.0]] * batch),
+        "lfo_target": torch.zeros(batch, 4),
+        "lfo_phase": torch.full((batch,), 0.0),
         "amp_attack": torch.full((batch,), 0.2),
         "amp_decay": torch.full((batch,), 0.3),
         "amp_sustain": torch.full((batch,), 0.8),
@@ -217,6 +223,48 @@ def main():
     with torch.no_grad():
         audio = synth(p)
     save_wav(audio[0], "08_fm_epiano")
+
+    # --- 9. DnB Bass Sequence ---
+    print("9. DnB Bass Sequence")
+    p = make_base_params()
+    p["osc_waveform"] = torch.tensor([[0.0, 1.0, 0.0, 0.0]])
+    p["filter_cutoff"] = torch.tensor([0.4])
+    p["filter_q"] = torch.tensor([0.5])
+    p["filt_env_amount"] = torch.tensor([0.7])
+    p["dist_amount"] = torch.tensor([0.3])
+    p["dist_mix"] = torch.tensor([0.5])
+
+    seq_pitch = torch.full((1, 32), 0.2)
+    seq_velocity = torch.zeros(1, 32)
+    for step in [0, 6, 8, 14, 16, 22, 24, 30]:
+        seq_velocity[0, step] = 0.9
+    seq_pitch[0, 8] = 0.25
+    seq_pitch[0, 24] = 0.18
+    seq_gate = torch.full((1, 32), 0.6)
+    seq_timing = torch.zeros(1, 32)
+
+    with torch.no_grad():
+        audio = render_sequence(p, seq_pitch, seq_velocity, seq_gate, seq_timing, bpm=174.0)
+    save_wav(audio[0], "09_dnb_bass_sequence")
+
+    # --- 10. Wobble Bass (LFO demo) ---
+    print("10. Wobble Bass (LFO)")
+    p = make_base_params()
+    p["osc_waveform"] = torch.tensor([[0.0, 1.0, 0.0, 0.0]])
+    p["osc_pitch"] = torch.tensor([0.2])
+    p["filter_cutoff"] = torch.tensor([0.35])
+    p["filter_q"] = torch.tensor([0.6])
+    p["filt_env_amount"] = torch.tensor([0.5])
+    p["dist_amount"] = torch.tensor([0.4])
+    p["dist_mix"] = torch.tensor([0.6])
+    p["lfo_rate"] = torch.tensor([0.35])
+    p["lfo_depth"] = torch.tensor([0.9])
+    p["lfo_waveform"] = torch.tensor([[1.0, 0.0, 0.0, 0.0]])
+    p["lfo_target"] = torch.tensor([[1.0, 0.0, 0.3, 0.0]])
+    p["lfo_phase"] = torch.tensor([0.0])
+    with torch.no_grad():
+        audio = synth(p)
+    save_wav(audio[0], "10_wobble_bass")
 
     print("\nDone! Check output/ folder.")
 
