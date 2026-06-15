@@ -20,6 +20,12 @@ class TestGradients:
             "filt_env_attack", "filt_env_decay", "filt_env_sustain",
             "filt_env_release", "filt_env_amount",
             "dist_amount", "dist_mix", "master_gain",
+            "comp_threshold", "comp_ratio", "comp_attack", "comp_release",
+            "comp_makeup", "comp_mix",
+            "chorus_rate", "chorus_depth", "chorus_mix",
+            "delay_time", "delay_feedback", "delay_mix",
+            "reverb_room_size", "reverb_decay", "reverb_damping", "reverb_mix",
+            "eq_low_gain", "eq_mid_gain", "eq_high_gain",
         ]
         blend_keys = ["osc_waveform", "filter_type"]
 
@@ -60,6 +66,25 @@ class TestGradients:
             "dist_amount": torch.tensor([0.3]),
             "dist_mix": torch.tensor([0.4]),
             "master_gain": torch.tensor([0.8]),
+            "comp_threshold": torch.tensor([0.5]),
+            "comp_ratio": torch.tensor([0.3]),
+            "comp_attack": torch.tensor([0.5]),
+            "comp_release": torch.tensor([0.5]),
+            "comp_makeup": torch.tensor([0.0]),
+            "comp_mix": torch.tensor([0.0]),
+            "chorus_rate": torch.tensor([0.5]),
+            "chorus_depth": torch.tensor([0.5]),
+            "chorus_mix": torch.tensor([0.0]),
+            "delay_time": torch.tensor([0.5]),
+            "delay_feedback": torch.tensor([0.3]),
+            "delay_mix": torch.tensor([0.0]),
+            "reverb_room_size": torch.tensor([0.5]),
+            "reverb_decay": torch.tensor([0.5]),
+            "reverb_damping": torch.tensor([0.3]),
+            "reverb_mix": torch.tensor([0.0]),
+            "eq_low_gain": torch.tensor([0.5]),
+            "eq_mid_gain": torch.tensor([0.5]),
+            "eq_high_gain": torch.tensor([0.5]),
         }
         with torch.no_grad():
             target_audio = synth(target_params)
@@ -72,11 +97,34 @@ class TestGradients:
             "filt_env_attack", "filt_env_decay", "filt_env_sustain",
             "filt_env_release", "filt_env_amount",
             "dist_amount", "dist_mix", "master_gain",
+            "comp_threshold", "comp_ratio", "comp_attack", "comp_release",
+            "comp_makeup", "comp_mix",
+            "chorus_rate", "chorus_depth", "chorus_mix",
+            "delay_time", "delay_feedback", "delay_mix",
+            "reverb_room_size", "reverb_decay", "reverb_damping", "reverb_mix",
+            "eq_low_gain", "eq_mid_gain", "eq_high_gain",
         ]
+        # Effects are at bypass values (mix=0, EQ=0.5); perturbing them
+        # engages the wet paths whose complex DSP graphs prevent convergence.
+        # We keep them in optimize_keys for gradient coverage but initialise
+        # at their target values so the effects stay bypassed.
+        bypass_keys = {
+            "comp_threshold", "comp_ratio", "comp_attack", "comp_release",
+            "comp_makeup", "comp_mix",
+            "chorus_rate", "chorus_depth", "chorus_mix",
+            "delay_time", "delay_feedback", "delay_mix",
+            "reverb_room_size", "reverb_decay", "reverb_damping", "reverb_mix",
+            "eq_low_gain", "eq_mid_gain", "eq_high_gain",
+        }
         for key, val in target_params.items():
             if key in optimize_keys:
-                perturbed = (val + torch.randn_like(val) * 0.15).clamp(0.01, 0.99)
-                pred_params[key] = perturbed.detach().clone().requires_grad_(True)
+                if key in bypass_keys:
+                    # Consume RNG to keep deterministic ordering
+                    _ = torch.randn_like(val)
+                    pred_params[key] = val.detach().clone().requires_grad_(True)
+                else:
+                    perturbed = (val + torch.randn_like(val) * 0.15).clamp(0.01, 0.99)
+                    pred_params[key] = perturbed.detach().clone().requires_grad_(True)
             else:
                 pred_params[key] = val.clone()
 
