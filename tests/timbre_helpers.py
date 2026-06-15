@@ -10,7 +10,8 @@ def _to_numpy(audio):
 
 def fundamental_freq(audio, sr):
     audio = _to_numpy(audio).flatten()
-    fft = np.fft.rfft(audio)
+    window = np.hanning(len(audio))
+    fft = np.fft.rfft(audio * window)
     magnitudes = np.abs(fft)
     freqs = np.fft.rfftfreq(len(audio), 1.0 / sr)
     peak_idx = np.argmax(magnitudes[1:]) + 1
@@ -19,7 +20,8 @@ def fundamental_freq(audio, sr):
 
 def harmonic_amplitudes(audio, sr, f0, n):
     audio = _to_numpy(audio).flatten()
-    fft = np.fft.rfft(audio)
+    window = np.hanning(len(audio))
+    fft = np.fft.rfft(audio * window)
     magnitudes = np.abs(fft)
     freqs = np.fft.rfftfreq(len(audio), 1.0 / sr)
     freq_resolution = freqs[1] - freqs[0]
