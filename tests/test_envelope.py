@@ -54,3 +54,17 @@ class TestADSR:
         release = torch.tensor([0.3], device=DEVICE)
         env = self.adsr(attack, decay, sustain, release)
         assert not torch.isnan(env).any()
+
+    def test_dynamic_note_on_duration(self):
+        """Different note_on_duration should change where release starts."""
+        attack = torch.tensor([0.1], device=DEVICE)
+        decay = torch.tensor([0.2], device=DEVICE)
+        sustain = torch.tensor([0.6], device=DEVICE)
+        release = torch.tensor([0.3], device=DEVICE)
+
+        env_short = self.adsr(attack, decay, sustain, release, note_on_duration=0.5)
+        env_long = self.adsr(attack, decay, sustain, release, note_on_duration=2.0)
+
+        short_tail = env_short[0, N_SAMPLES // 2:].mean()
+        long_tail = env_long[0, N_SAMPLES // 2:].mean()
+        assert long_tail > short_tail

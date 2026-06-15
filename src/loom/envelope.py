@@ -49,6 +49,7 @@ class ADSR(nn.Module):
         decay: torch.Tensor,
         sustain: torch.Tensor,
         release: torch.Tensor,
+        note_on_duration=None,
     ) -> torch.Tensor:
         """Generate ADSR envelope.
 
@@ -57,10 +58,14 @@ class ADSR(nn.Module):
             decay: (batch,) normalized decay time [0,1].
             sustain: (batch,) sustain level [0,1].
             release: (batch,) normalized release time [0,1].
+            note_on_duration: Duration in seconds before release begins. If
+                None, uses the value set in the constructor.
 
         Returns:
             (batch, n_samples) envelope in [0, 1].
         """
+        if note_on_duration is None:
+            note_on_duration = self.note_on_duration
         a_sec = self._denorm_time(attack, self.MAX_ATTACK_MS)
         d_sec = self._denorm_time(decay, self.MAX_DECAY_MS)
         r_sec = self._denorm_time(release, self.MAX_RELEASE_MS)
@@ -82,7 +87,7 @@ class ADSR(nn.Module):
         # Release ramp: sustain -> 0 over r_sec, starting at note_on_duration
         r_sec_safe = r_sec.unsqueeze(1).clamp(min=1e-6)
         release_progress = (
-            (t - self.note_on_duration) / r_sec_safe
+            (t - note_on_duration) / r_sec_safe
         ).clamp(0.0, 1.0)
         release_ramp = 1.0 - release_progress
 
