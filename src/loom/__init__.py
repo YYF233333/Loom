@@ -1,1 +1,1 @@
-from loom.core import SAMPLE_RATE, DURATION, N_SAMPLES
+from loom.core import SAMPLE_RATE, DURATION, N_SAMPLES, DEVICE

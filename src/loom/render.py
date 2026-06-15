@@ -1,9 +1,9 @@
 import torch
-from loom.core import SAMPLE_RATE, N_SAMPLES
+from loom.core import SAMPLE_RATE, N_SAMPLES, DEVICE
 from loom.synth import SubtractiveSynth
 
 
-def random_params(batch: int, device: torch.device = torch.device("cpu")) -> dict[str, torch.Tensor]:
+def random_params(batch: int, device: torch.device = DEVICE) -> dict[str, torch.Tensor]:
     """Sample a random parameter dictionary for SubtractiveSynth."""
     def _rand(shape):
         return torch.rand(shape, device=device)
@@ -64,5 +64,6 @@ def render(params: dict[str, torch.Tensor], sample_rate: int = SAMPLE_RATE, n_sa
     Returns:
         (batch, n_samples) audio tensor.
     """
-    synth = SubtractiveSynth(sample_rate, n_samples)
+    device = next(iter(params.values())).device
+    synth = SubtractiveSynth(sample_rate, n_samples).to(device)
     return synth(params)
