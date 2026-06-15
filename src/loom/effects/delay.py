@@ -74,6 +74,10 @@ class Delay(nn.Module):
             feedback: (batch,) feedback amount [0,1] -> [0, 0.9].
             mix: (batch,) dry/wet [0,1].
         """
+        # Short-circuit when fully bypassed to avoid polluting gradients.
+        if mix.max().item() < 0.02:
+            return signal + 0.0 * mix.unsqueeze(1)
+
         delay_samples = self._denorm_time(time)
         fb = feedback * self.MAX_FEEDBACK
         mix = mix.unsqueeze(1)

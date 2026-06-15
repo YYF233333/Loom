@@ -72,6 +72,10 @@ class Compressor(nn.Module):
             makeup: (batch,) normalized [0,1] -> [0dB, 30dB].
             mix: (batch,) dry/wet [0,1].
         """
+        # Short-circuit when fully bypassed to avoid polluting gradients.
+        if mix.max().item() < 0.02:
+            return signal + 0.0 * mix.unsqueeze(1)
+
         thresh_db = self._denorm_threshold(threshold).unsqueeze(1)
         ratio_val = self._denorm_ratio(ratio).unsqueeze(1)
         makeup_linear = self._denorm_makeup(makeup).unsqueeze(1)
@@ -89,15 +93,19 @@ class Compressor(nn.Module):
         smooth_ms = self._denorm_time_ms(
             (attack + release) / 2.0, self.ATTACK_MIN_MS, self.RELEASE_MAX_MS
         )
-        smooth_samples = (smooth_ms / 1000.0 * 44100).long().clamp(min=1)
-        window = smooth_samples.max().item()
-        if window > 1:
-            gain_smooth = F.avg_pool1d(
-                gain.unsqueeze(1), window, stride=1, padding=window // 2
-            )
-            gain_smooth = gain_smooth[:, :, : signal.shape[1]].squeeze(1)
-        else:
-            gain_smooth = gain
+        # Differentiable smoothing: use a fixed-size avg_pool window
+        # but blend between unsmoothed and smoothed based on the
+        # continuous smooth_ms value to preserve gradients.
+        smooth_factor = (smooth_ms / 1000.0 * 44100).unsqueeze(1)  # (batch, 1)
+        window = 128  # fixed kernel size
+        gain_pooled = F.avg_pool1d(
+            gain.unsqueeze(1), window, stride=1, padding=window // 2
+        )
+        gain_pooled = gain_pooled[:, :, : signal.shape[1]].squeeze(1)
+        # Blend: when smooth_factor is small, use unsmoothed gain;
+        # when large, use fully smoothed. sigmoid maps to [0,1].
+        blend = torch.sigmoid((smooth_factor - window / 2) / (window / 4))
+        gain_smooth = (1.0 - blend) * gain + blend * gain_pooled
 
         wet = signal * gain_smooth * makeup_linear
         return (1.0 - mix) * signal + mix * wet

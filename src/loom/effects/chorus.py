@@ -46,6 +46,10 @@ class Chorus(nn.Module):
             depth: (batch,) normalized modulation depth [0,1].
             mix: (batch,) dry/wet [0,1].
         """
+        # Short-circuit when fully bypassed to avoid polluting gradients.
+        if mix.max().item() < 0.02:
+            return signal + 0.0 * mix.unsqueeze(1)
+
         batch = signal.shape[0]
         rate_hz = self._denorm_rate(rate)
         mix = mix.unsqueeze(1)

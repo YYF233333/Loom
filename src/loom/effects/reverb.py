@@ -52,6 +52,10 @@ class Reverb(nn.Module):
             damping: (batch,) normalized [0,1] -> high-freq absorption.
             mix: (batch,) dry/wet [0,1].
         """
+        # Short-circuit when fully bypassed to avoid polluting gradients.
+        if mix.max().item() < 0.02:
+            return signal + 0.0 * mix.unsqueeze(1)
+
         batch = signal.shape[0]
         device = signal.device
         mix_expand = mix.unsqueeze(1)
