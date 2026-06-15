@@ -39,7 +39,7 @@ class FMOscillator(nn.Module):
     def _denorm_mod_index(self, mod_index: torch.Tensor) -> torch.Tensor:
         return mod_index * self.MOD_INDEX_MAX
 
-    def forward(self, pitch, detune, carrier_ratio, mod_ratio, mod_index):
+    def forward(self, pitch, detune, carrier_ratio, mod_ratio, mod_index, freq_mod=None):
         """Render FM audio.
 
         Args:
@@ -48,6 +48,8 @@ class FMOscillator(nn.Module):
             carrier_ratio: (batch,) normalized [0,1] -> [1, 8].
             mod_ratio: (batch,) normalized [0,1] -> [1, 8].
             mod_index: (batch,) normalized [0,1] -> [0, 20].
+            freq_mod: (batch, n_samples) optional per-sample multiplicative frequency
+                modulator centered at 1.0. When provided, f(t) = f0 * freq_mod[t].
         Returns:
             (batch, n_samples) audio tensor.
         """
@@ -59,17 +61,17 @@ class FMOscillator(nn.Module):
         m_ratio = self._denorm_ratio(mod_ratio)
         m_idx = self._denorm_mod_index(mod_index)
 
-        t = self.t.unsqueeze(0)
-        f0 = f0.unsqueeze(1)
         c_ratio = c_ratio.unsqueeze(1)
         m_ratio = m_ratio.unsqueeze(1)
         m_idx = m_idx.unsqueeze(1)
 
-        mod_freq = f0 * m_ratio
-        mod_phase = 2.0 * math.pi * mod_freq * t
-        mod_signal = m_idx * torch.sin(mod_phase)
+        if freq_mod is not None:
+            f0_t = f0.unsqueeze(1) * freq_mod
+        else:
+            f0_t = f0.unsqueeze(1).expand(-1, self.n_samples)
 
-        carrier_freq = f0 * c_ratio
-        carrier_phase = 2.0 * math.pi * carrier_freq * t + mod_signal
+        mod_phase = torch.cumsum(2.0 * math.pi * f0_t * m_ratio / self.sample_rate, dim=1)
+        mod_signal = m_idx * torch.sin(mod_phase)
+        carrier_phase = torch.cumsum(2.0 * math.pi * f0_t * c_ratio / self.sample_rate, dim=1) + mod_signal
 
         return torch.sin(carrier_phase)

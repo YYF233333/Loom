@@ -58,13 +58,15 @@ class WavetableOscillator(nn.Module):
     def _denorm_detune(self, detune: torch.Tensor) -> torch.Tensor:
         return (detune - 0.5) * 200.0
 
-    def forward(self, pitch: torch.Tensor, detune: torch.Tensor, position: torch.Tensor) -> torch.Tensor:
+    def forward(self, pitch: torch.Tensor, detune: torch.Tensor, position: torch.Tensor, freq_mod=None) -> torch.Tensor:
         """Render audio from wavetable.
 
         Args:
             pitch: (batch,) normalized pitch [0,1] -> MIDI [24,96].
             detune: (batch,) normalized detune [0,1] -> [-100, +100] cents.
             position: (batch,) wavetable position [0,1] for frame morphing.
+            freq_mod: (batch, n_samples) optional per-sample multiplicative frequency
+                modulator centered at 1.0. When provided, f(t) = f0 * freq_mod[t].
         Returns:
             (batch, n_samples) audio tensor.
         """
@@ -74,9 +76,14 @@ class WavetableOscillator(nn.Module):
         f0 = f0 * torch.pow(2.0, cents / 1200.0)
 
         # Phase accumulation normalized [0, 1)
-        phase_inc = f0 / self.sample_rate
-        phase = torch.cumsum(phase_inc.unsqueeze(1).expand(-1, self.n_samples), dim=1)
-        phase = phase % 1.0
+        if freq_mod is not None:
+            f_t = f0.unsqueeze(1) * freq_mod
+            phase_inc = f_t / self.sample_rate
+            phase = torch.cumsum(phase_inc, dim=1) % 1.0
+        else:
+            phase_inc = f0 / self.sample_rate
+            phase = torch.cumsum(phase_inc.unsqueeze(1).expand(-1, self.n_samples), dim=1)
+            phase = phase % 1.0
 
         # Frame interpolation
         pos_scaled = position * (self.n_frames - 1)

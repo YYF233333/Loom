@@ -67,6 +67,7 @@ class AdditiveOscillator(nn.Module):
         pitch: torch.Tensor,
         waveform: torch.Tensor,
         detune: torch.Tensor | None = None,
+        freq_mod: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Render audio from oscillator parameters.
 
@@ -74,6 +75,8 @@ class AdditiveOscillator(nn.Module):
             pitch: (batch,) normalized pitch [0,1] -> MIDI [24,96].
             waveform: (batch, 4) waveform blend weights (sine, saw, square, tri).
             detune: (batch,) optional normalized detune [0,1] -> [-100, +100] cents.
+            freq_mod: (batch, n_samples) optional per-sample multiplicative frequency
+                modulator centered at 1.0. When provided, f(t) = f0 * freq_mod[t].
 
         Returns:
             (batch, n_samples) audio tensor in roughly [-1, 1].
@@ -98,10 +101,13 @@ class AdditiveOscillator(nn.Module):
         mask = harmonic_n.unsqueeze(0) <= max_h.unsqueeze(1)
         blended = blended * mask.float()
 
-        freqs = f0.unsqueeze(1) * harmonic_n.unsqueeze(0)
-        phases = (
-            2.0 * math.pi * freqs.unsqueeze(2) * self.t.unsqueeze(0).unsqueeze(0)
-        )
+        if freq_mod is not None:
+            f_t = f0.unsqueeze(1) * freq_mod  # (batch, n_samples)
+            phase_inc = 2.0 * math.pi * f_t.unsqueeze(1) * harmonic_n.unsqueeze(0).unsqueeze(2) / self.sample_rate
+            phases = torch.cumsum(phase_inc, dim=2)
+        else:
+            freqs = f0.unsqueeze(1) * harmonic_n.unsqueeze(0)
+            phases = 2.0 * math.pi * freqs.unsqueeze(2) * self.t.unsqueeze(0).unsqueeze(0)
         harmonics = torch.sin(phases)
 
         audio = torch.einsum("bh,bht->bt", blended, harmonics)

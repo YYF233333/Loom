@@ -66,3 +66,21 @@ class TestAdditiveOscillator:
         freqs = torch.fft.rfftfreq(N_SAMPLES, 1.0 / SAMPLE_RATE, device=DEVICE)
         peak_freq = freqs[torch.argmax(magnitudes[1:]) + 1]
         assert peak_freq.item() > 440.0
+
+    def test_freq_mod_vibrato(self):
+        """Per-sample freq_mod should spread spectrum (vibrato)."""
+        pitch = torch.tensor([0.5], device=DEVICE)
+        waveform = torch.zeros(1, 4, device=DEVICE)
+        waveform[:, 0] = 1.0
+        audio_static = self.osc(pitch, waveform)
+        t = torch.arange(N_SAMPLES, dtype=torch.float32, device=DEVICE) / SAMPLE_RATE
+        freq_mod = (1.0 + 0.05 * torch.sin(2 * 3.14159 * 5.0 * t)).unsqueeze(0)
+        audio_vibrato = self.osc(pitch, waveform, freq_mod=freq_mod)
+        fft_s = torch.abs(torch.fft.rfft(audio_static[0]))
+        fft_v = torch.abs(torch.fft.rfft(audio_vibrato[0]))
+        peak = torch.argmax(fft_s[1:]) + 1
+        side_s = fft_s[max(1,peak-30):peak+30].sum() - fft_s[peak]
+        side_v = fft_v[max(1,peak-30):peak+30].sum() - fft_v[peak]
+        # Vibrato redistributes energy from the main peak to sidebands;
+        # the static peak should be much larger than the vibrato peak at that bin.
+        assert fft_v[peak] < fft_s[peak] * 0.3

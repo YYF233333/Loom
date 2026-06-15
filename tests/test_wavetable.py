@@ -46,3 +46,13 @@ class TestWavetableOscillator:
         position = torch.tensor([0.99], device=DEVICE)
         audio = self.osc(pitch, detune, position)
         assert not torch.isnan(audio).any()
+
+    def test_freq_mod_vibrato(self):
+        pitch = torch.tensor([0.5], device=DEVICE)
+        detune = torch.tensor([0.5], device=DEVICE)
+        position = torch.tensor([0.0], device=DEVICE)
+        audio_static = self.osc(pitch, detune, position)
+        t = torch.arange(N_SAMPLES, dtype=torch.float32, device=DEVICE) / SAMPLE_RATE
+        freq_mod = (1.0 + 0.05 * torch.sin(2 * 3.14159 * 5.0 * t)).unsqueeze(0)
+        audio_vibrato = self.osc(pitch, detune, position, freq_mod=freq_mod)
+        assert not torch.allclose(audio_static, audio_vibrato, atol=0.01)

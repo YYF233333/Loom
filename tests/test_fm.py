@@ -74,3 +74,15 @@ class TestFMOscillator:
             mod_index=torch.tensor([0.99], device=DEVICE),
         )
         assert not torch.isnan(out).any()
+
+    def test_freq_mod_vibrato(self):
+        pitch = torch.tensor([0.5], device=DEVICE)
+        detune = torch.tensor([0.5], device=DEVICE)
+        cr = torch.tensor([0.0], device=DEVICE)
+        mr = torch.tensor([0.0], device=DEVICE)
+        mi = torch.tensor([0.0], device=DEVICE)
+        audio_static = self.osc(pitch, detune, cr, mr, mi)
+        t = torch.arange(N_SAMPLES, dtype=torch.float32, device=DEVICE) / SAMPLE_RATE
+        freq_mod = (1.0 + 0.05 * torch.sin(2 * 3.14159 * 5.0 * t)).unsqueeze(0)
+        audio_vibrato = self.osc(pitch, detune, cr, mr, mi, freq_mod=freq_mod)
+        assert not torch.allclose(audio_static, audio_vibrato, atol=0.01)
