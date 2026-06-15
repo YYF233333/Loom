@@ -19,6 +19,11 @@ def make_base_params(batch=1):
         "osc_pitch": torch.full((batch,), 0.5),
         "osc_waveform": torch.tensor([[0.0, 1.0, 0.0, 0.0]] * batch),  # saw
         "osc_detune": torch.full((batch,), 0.5),  # no detune
+        "osc_type": torch.tensor([[1.0, 0.0, 0.0]] * batch),
+        "wt_position": torch.full((batch,), 0.5),
+        "fm_carrier_ratio": torch.full((batch,), 0.0),
+        "fm_mod_ratio": torch.full((batch,), 0.0),
+        "fm_mod_index": torch.full((batch,), 0.0),
         "amp_attack": torch.full((batch,), 0.2),
         "amp_decay": torch.full((batch,), 0.3),
         "amp_sustain": torch.full((batch,), 0.8),
@@ -178,6 +183,40 @@ def main():
     with torch.no_grad():
         audio = synth(p)
     save_wav(audio[0], "06_delay_lead")
+
+    # --- 7. Wavetable Morph ---
+    print("7. Wavetable Morph")
+    p = make_base_params()
+    p["osc_type"] = torch.tensor([[0.0, 1.0, 0.0]])
+    p["osc_pitch"] = torch.tensor([0.5])
+    p["wt_position"] = torch.tensor([0.3])
+    p["filter_cutoff"] = torch.tensor([0.6])
+    p["filt_env_amount"] = torch.tensor([0.6])
+    p["chorus_rate"] = torch.tensor([0.4])
+    p["chorus_depth"] = torch.tensor([0.5])
+    p["chorus_mix"] = torch.tensor([0.4])
+    with torch.no_grad():
+        audio = synth(p)
+    save_wav(audio[0], "07_wavetable_morph")
+
+    # --- 8. FM Electric Piano ---
+    print("8. FM Electric Piano")
+    p = make_base_params()
+    p["osc_type"] = torch.tensor([[0.0, 0.0, 1.0]])
+    p["osc_pitch"] = torch.tensor([0.55])
+    p["fm_carrier_ratio"] = torch.tensor([0.0])
+    p["fm_mod_ratio"] = torch.tensor([0.0])
+    p["fm_mod_index"] = torch.tensor([0.15])
+    p["amp_attack"] = torch.tensor([0.1])
+    p["amp_decay"] = torch.tensor([0.5])
+    p["amp_sustain"] = torch.tensor([0.3])
+    p["filter_cutoff"] = torch.tensor([0.7])
+    p["reverb_room_size"] = torch.tensor([0.4])
+    p["reverb_decay"] = torch.tensor([0.4])
+    p["reverb_mix"] = torch.tensor([0.3])
+    with torch.no_grad():
+        audio = synth(p)
+    save_wav(audio[0], "08_fm_epiano")
 
     print("\nDone! Check output/ folder.")
 
