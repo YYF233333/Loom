@@ -125,3 +125,82 @@ class TestEffectsChain:
         loss.backward()
         assert logits.grad is not None, "No gradient at routing_logits"
         assert logits.grad.abs().max() > 0, "Routing gradient is all zeros"
+
+
+# ---------------------------------------------------------------------------
+# TestRoutingBehavior
+# ---------------------------------------------------------------------------
+
+from tests.conftest import save_test_wav
+
+
+class TestRoutingBehavior:
+    def setup_method(self):
+        self.n_samples = 44100
+        self.chain = EffectsChain(SAMPLE_RATE, self.n_samples)
+
+    def test_different_routing_different_output(self):
+        """Two different hard routings with active effects produce different audio."""
+        audio = torch.randn(1, self.n_samples)
+        params = _make_fx_params(batch=1)
+        params["dist_mix"] = torch.tensor([0.8])
+        params["dist_drive"] = torch.full((1,), 0.5)
+        params["reverb_mix"] = torch.tensor([0.5])
+
+        logits_a = torch.eye(6).unsqueeze(0) * 100
+        logits_b = torch.zeros(1, 6, 6)
+        perm_b = [4, 1, 2, 3, 0, 5]
+        for slot, fx in enumerate(perm_b):
+            logits_b[0, slot, fx] = 100.0
+
+        out_a = self.chain(audio.clone(), params, routing_logits=logits_a, tau=0.01)
+        out_b = self.chain(audio.clone(), params, routing_logits=logits_b, tau=0.01)
+
+        diff = (out_a - out_b).abs().max().item()
+        assert diff > 0.01, f"Routing should change output, max diff={diff}"
+
+    def test_identity_routing_matches_canonical(self):
+        """Identity permutation routing should match no-routing (canonical) output."""
+        audio = torch.randn(1, self.n_samples)
+        params = _make_fx_params(batch=1)
+        params["dist_mix"] = torch.tensor([0.3])
+        params["dist_drive"] = torch.full((1,), 0.3)
+
+        out_none = self.chain(audio.clone(), params, routing_logits=None)
+        logits_id = torch.eye(6).unsqueeze(0) * 100
+        out_id = self.chain(audio.clone(), params, routing_logits=logits_id, tau=0.01)
+
+        assert torch.allclose(out_none, out_id, atol=1e-3), (
+            f"Identity routing should match canonical. Max diff: "
+            f"{(out_none - out_id).abs().max().item()}"
+        )
+
+    def test_save_routed_audio(self):
+        """Save audio with non-canonical routing for manual inspection."""
+        import os
+        audio = torch.randn(1, self.n_samples)
+        params = _make_fx_params(batch=1)
+        params["dist_mix"] = torch.tensor([0.7])
+        params["dist_drive"] = torch.full((1,), 0.6)
+        params["reverb_mix"] = torch.tensor([0.4])
+
+        logits = torch.zeros(1, 6, 6)
+        perm = [4, 1, 2, 3, 0, 5]
+        for slot, fx in enumerate(perm):
+            logits[0, slot, fx] = 100.0
+
+        out = self.chain(audio, params, routing_logits=logits, tau=0.01)
+        path = save_test_wav(out[0].detach(), "fx_routing_reverb_before_dist")
+        assert os.path.exists(path)
+
+
+class TestAnnealSchedule:
+    def test_endpoints(self):
+        from loom.effects.chain import routing_temperature
+        assert routing_temperature(0, 100) == pytest.approx(5.0, abs=0.1)
+        assert routing_temperature(99, 100) == pytest.approx(0.1, abs=0.05)
+
+    def test_midpoint(self):
+        from loom.effects.chain import routing_temperature
+        mid = routing_temperature(50, 100)
+        assert 0.1 < mid < 5.0
