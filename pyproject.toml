@@ -36,4 +36,5 @@ torchaudio = { index = "pytorch-cu124" }
 [dependency-groups]
 dev = [
     "pytest>=9.1.0",
+    "scipy>=1.11",
 ]
