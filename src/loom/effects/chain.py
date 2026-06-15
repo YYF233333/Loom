@@ -1,3 +1,5 @@
+import math
+
 import torch
 import torch.nn as nn
 
@@ -63,3 +65,9 @@ class EffectsChain(nn.Module):
             stacked = torch.stack(outputs, dim=1)
             audio = (weights.unsqueeze(-1) * stacked).sum(dim=1)
         return audio
+
+
+def routing_temperature(epoch, total_epochs, tau_max=5.0, tau_min=0.1):
+    """Exponential temperature decay for Sinkhorn routing."""
+    progress = min(epoch / max(total_epochs - 1, 1), 1.0)
+    return tau_max * math.exp(progress * math.log(tau_min / tau_max))
