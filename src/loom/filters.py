@@ -90,18 +90,28 @@ class BiquadFilter(nn.Module):
         cutoff_hz = self._denorm_cutoff(cutoff)
         q_val = self._denorm_q(q)
         all_coeffs = self._compute_coeffs(cutoff_hz, q_val)
+        batch = signal.shape[0]
 
-        results = []
-        for i in range(signal.shape[0]):
-            sample_out = torch.zeros_like(signal[i])
-            for j, key in enumerate(["lp", "hp", "bp"]):
-                coeffs = all_coeffs[key][i]
-                b = coeffs[:3] / coeffs[3]
-                a = torch.cat(
-                    [torch.ones(1, device=signal.device), coeffs[4:6] / coeffs[3]]
-                )
-                filtered = AF.lfilter(signal[i].unsqueeze(0), a, b, clamp=False)
-                sample_out = sample_out + filter_type[i, j] * filtered.squeeze(0)
-            results.append(sample_out)
+        # Stack all filter types: (3, batch, 6)
+        coeffs_stack = torch.stack(
+            [all_coeffs["lp"], all_coeffs["hp"], all_coeffs["bp"]], dim=0
+        )
+        a0 = coeffs_stack[:, :, 3:4]  # (3, batch, 1)
+        b = coeffs_stack[:, :, :3] / a0  # (3, batch, 3)
+        a = torch.cat(
+            [torch.ones(3, batch, 1, device=signal.device), coeffs_stack[:, :, 4:6] / a0],
+            dim=2,
+        )  # (3, batch, 3)
 
-        return torch.stack(results, dim=0)
+        # Expand signal for all 3 filter types: (3*batch, n_samples)
+        signal_rep = signal.unsqueeze(0).expand(3, -1, -1).reshape(3 * batch, -1)
+        a_flat = a.reshape(3 * batch, 3)
+        b_flat = b.reshape(3 * batch, 3)
+
+        # Single batched lfilter call
+        filtered_all = AF.lfilter(signal_rep, a_flat, b_flat, clamp=False)
+        filtered_all = filtered_all.reshape(3, batch, -1)  # (3, batch, n_samples)
+
+        # Blend by filter_type weights: (batch, 3) @ (3, batch, n_samples)
+        weights = filter_type.t().unsqueeze(2)  # (3, batch, 1)
+        return (weights * filtered_all).sum(dim=0)  # (batch, n_samples)
