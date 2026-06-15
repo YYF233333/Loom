@@ -6,14 +6,19 @@ from loom.envelope import ADSR
 from loom.filters import BiquadFilter
 from loom.amplifier import VCA
 from loom.effects.distortion import Distortion
+from loom.effects.compressor import Compressor
+from loom.effects.chorus import Chorus
+from loom.effects.delay import Delay
+from loom.effects.reverb import Reverb
+from loom.effects.eq import EQ
 
 
 class SubtractiveSynth(nn.Module):
-    """Complete subtractive synthesizer.
+    """Complete subtractive synthesizer with full effects chain.
 
-    Signal flow: Oscillator -> Filter (with envelope) -> VCA (with envelope) -> Distortion
-
-    The filter envelope modulates cutoff: effective_cutoff = cutoff + amount * filt_env.
+    Signal flow:
+        Oscillator -> Filter (with envelope) -> VCA (with envelope)
+        -> Distortion -> Compressor -> Chorus -> Delay -> Reverb -> EQ
     """
 
     def __init__(self, sample_rate: int, n_samples: int):
@@ -24,43 +29,36 @@ class SubtractiveSynth(nn.Module):
         self.filter = BiquadFilter(sample_rate)
         self.vca = VCA()
         self.distortion = Distortion()
+        self.compressor = Compressor()
+        self.chorus = Chorus(sample_rate, n_samples)
+        self.delay = Delay(sample_rate, n_samples)
+        self.reverb = Reverb(sample_rate, n_samples)
+        self.eq = EQ(sample_rate)
 
     def forward(self, params: dict[str, torch.Tensor]) -> torch.Tensor:
-        """Render audio from parameter dictionary.
-
-        Args:
-            params: Dict with keys matching the parameter table in the spec.
-
-        Returns:
-            (batch, n_samples) audio tensor.
-        """
-        # Oscillator
+        """Render audio from parameter dictionary."""
         audio = self.oscillator(
             params["osc_pitch"],
             params["osc_waveform"],
             params["osc_detune"],
         )
 
-        # Filter envelope -> modulate cutoff
         filt_env = self.filter_envelope(
             params["filt_env_attack"],
             params["filt_env_decay"],
             params["filt_env_sustain"],
             params["filt_env_release"],
         )
-        # filt_env_amount: [0,1] normalized, treat 0.5 as zero modulation
-        amount = (params["filt_env_amount"] - 0.5) * 2.0  # -> [-1, 1]
-        filt_env_mean = filt_env.mean(dim=1)  # (batch,)
+        amount = (params["filt_env_amount"] - 0.5) * 2.0
+        filt_env_mean = filt_env.mean(dim=1)
         modulated_cutoff = (
             params["filter_cutoff"] + amount * filt_env_mean * 0.3
         ).clamp(0.0, 1.0)
 
-        # Filter
         audio = self.filter(
             audio, modulated_cutoff, params["filter_q"], params["filter_type"]
         )
 
-        # Amplitude envelope + VCA
         amp_env = self.amp_envelope(
             params["amp_attack"],
             params["amp_decay"],
@@ -69,7 +67,31 @@ class SubtractiveSynth(nn.Module):
         )
         audio = self.vca(audio, amp_env, params["master_gain"])
 
-        # Distortion
         audio = self.distortion(audio, params["dist_amount"], params["dist_mix"])
+        audio = self.compressor(
+            audio,
+            params["comp_threshold"],
+            params["comp_ratio"],
+            params["comp_attack"],
+            params["comp_release"],
+            params["comp_makeup"],
+            params["comp_mix"],
+        )
+        audio = self.chorus(
+            audio, params["chorus_rate"], params["chorus_depth"], params["chorus_mix"]
+        )
+        audio = self.delay(
+            audio, params["delay_time"], params["delay_feedback"], params["delay_mix"]
+        )
+        audio = self.reverb(
+            audio,
+            params["reverb_room_size"],
+            params["reverb_decay"],
+            params["reverb_damping"],
+            params["reverb_mix"],
+        )
+        audio = self.eq(
+            audio, params["eq_low_gain"], params["eq_mid_gain"], params["eq_high_gain"]
+        )
 
         return audio
