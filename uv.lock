@@ -315,6 +315,11 @@ dev = [
     { name = "pytest" },
 ]
 
+[package.dev-dependencies]
+dev = [
+    { name = "pytest" },
+]
+
 [package.metadata]
 requires-dist = [
     { name = "matplotlib", specifier = ">=3.7" },
@@ -323,6 +328,9 @@ requires-dist = [
     { name = "torchaudio", specifier = ">=2.0", index = "https://download.pytorch.org/whl/cu124" },
 ]
 provides-extras = ["dev"]
+
+[package.metadata.requires-dev]
+dev = [{ name = "pytest", specifier = ">=9.1.0" }]
 
 [[package]]
 name = "markupsafe"
