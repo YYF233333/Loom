@@ -152,6 +152,11 @@ def main():
     p["comp_mix"] = torch.tensor([0.7])
     p["eq_low_gain"] = torch.tensor([0.7])          # boost lows
     p["eq_high_gain"] = torch.tensor([0.3])         # cut highs
+    p["lfo_rate"] = torch.tensor([0.45])            # ~3Hz wobble
+    p["lfo_depth"] = torch.tensor([0.85])
+    p["lfo_waveform"] = torch.tensor([[1.0, 0.0, 0.0, 0.0]])
+    p["lfo_target"] = torch.tensor([[1.0, 0.0, 0.2, 0.0]])  # cutoff + slight dist
+    p["lfo_phase"] = torch.tensor([0.0])
     with torch.no_grad():
         audio = synth(p)
     save_wav(audio[0], "04_neuro_bass")
@@ -257,7 +262,7 @@ def main():
     p["filt_env_amount"] = torch.tensor([0.5])
     p["dist_amount"] = torch.tensor([0.4])
     p["dist_mix"] = torch.tensor([0.6])
-    p["lfo_rate"] = torch.tensor([0.35])
+    p["lfo_rate"] = torch.tensor([0.45])             # ~3Hz wobble
     p["lfo_depth"] = torch.tensor([0.9])
     p["lfo_waveform"] = torch.tensor([[1.0, 0.0, 0.0, 0.0]])
     p["lfo_target"] = torch.tensor([[1.0, 0.0, 0.3, 0.0]])
