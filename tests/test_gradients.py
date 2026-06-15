@@ -29,8 +29,9 @@ class TestGradients:
             "delay_time", "delay_feedback", "delay_mix",
             "reverb_room_size", "reverb_decay", "reverb_damping", "reverb_mix",
             "eq_low_gain", "eq_mid_gain", "eq_high_gain",
+            "lfo_rate", "lfo_depth", "lfo_phase",
         ]
-        blend_keys = ["osc_waveform", "filter_type", "osc_type"]
+        blend_keys = ["osc_waveform", "filter_type", "osc_type", "lfo_waveform", "lfo_target"]
 
         for key in continuous_keys + blend_keys:
             params[key] = params[key].detach().clone().requires_grad_(True)
@@ -59,6 +60,11 @@ class TestGradients:
             "fm_carrier_ratio": torch.tensor([0.0], device=DEVICE),
             "fm_mod_ratio": torch.tensor([0.0], device=DEVICE),
             "fm_mod_index": torch.tensor([0.0], device=DEVICE),
+            "lfo_rate": torch.tensor([0.5], device=DEVICE),
+            "lfo_depth": torch.tensor([0.0], device=DEVICE),
+            "lfo_waveform": torch.tensor([[1.0, 0.0, 0.0, 0.0]], device=DEVICE),
+            "lfo_target": torch.zeros(1, 4, device=DEVICE),
+            "lfo_phase": torch.tensor([0.0], device=DEVICE),
             "amp_attack": torch.tensor([0.2], device=DEVICE),
             "amp_decay": torch.tensor([0.3], device=DEVICE),
             "amp_sustain": torch.tensor([0.7], device=DEVICE),
@@ -113,6 +119,7 @@ class TestGradients:
             "delay_time", "delay_feedback", "delay_mix",
             "reverb_room_size", "reverb_decay", "reverb_damping", "reverb_mix",
             "eq_low_gain", "eq_mid_gain", "eq_high_gain",
+            "lfo_rate", "lfo_depth", "lfo_phase",
         ]
         # Effects are at bypass values (mix=0, EQ=0.5); perturbing them
         # engages the wet paths whose complex DSP graphs prevent convergence.
@@ -127,6 +134,7 @@ class TestGradients:
             "delay_time", "delay_feedback", "delay_mix",
             "reverb_room_size", "reverb_decay", "reverb_damping", "reverb_mix",
             "eq_low_gain", "eq_mid_gain", "eq_high_gain",
+            "lfo_rate", "lfo_depth", "lfo_phase",
         }
         for key, val in target_params.items():
             if key in optimize_keys:

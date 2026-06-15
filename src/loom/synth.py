@@ -13,6 +13,7 @@ from loom.effects.chorus import Chorus
 from loom.effects.delay import Delay
 from loom.effects.reverb import Reverb
 from loom.effects.eq import EQ
+from loom.lfo import LFO
 
 
 class SubtractiveSynth(nn.Module):
@@ -38,33 +39,51 @@ class SubtractiveSynth(nn.Module):
         self.delay = Delay(sample_rate, n_samples)
         self.reverb = Reverb(sample_rate, n_samples)
         self.eq = EQ(sample_rate)
+        self.lfo = LFO(sample_rate, n_samples)
 
     def forward(self, params: dict[str, torch.Tensor]) -> torch.Tensor:
         """Render audio from parameter dictionary."""
+        # LFO modulation
+        lfo_signal = self.lfo(
+            params["lfo_rate"],
+            params["lfo_depth"],
+            params["lfo_waveform"],
+            params["lfo_phase"],
+        )
+        lfo_target = params["lfo_target"]  # (batch, 4)
+
+        # Modulated pitch (LFO uses mean of time-varying signal for scalar params)
+        pitch_mod = (
+            params["osc_pitch"]
+            + lfo_target[:, 1] * lfo_signal.mean(dim=1) * 0.05
+        ).clamp(0.0, 1.0)
+
+        # Oscillators with modulated pitch
         additive_out = self.oscillator(
-            params["osc_pitch"],
+            pitch_mod,
             params["osc_waveform"],
             params["osc_detune"],
         )
         wavetable_out = self.wavetable_osc(
-            params["osc_pitch"],
+            pitch_mod,
             params["osc_detune"],
             params["wt_position"],
         )
         fm_out = self.fm_osc(
-            params["osc_pitch"],
+            pitch_mod,
             params["osc_detune"],
             params["fm_carrier_ratio"],
             params["fm_mod_ratio"],
             params["fm_mod_index"],
         )
-        osc_type = params["osc_type"]  # (batch, 3)
+        osc_type = params["osc_type"]
         audio = (
             osc_type[:, 0:1] * additive_out
             + osc_type[:, 1:2] * wavetable_out
             + osc_type[:, 2:3] * fm_out
         )
 
+        # Filter with envelope + LFO modulation on cutoff
         filt_env = self.filter_envelope(
             params["filt_env_attack"],
             params["filt_env_decay"],
@@ -73,8 +92,9 @@ class SubtractiveSynth(nn.Module):
         )
         amount = (params["filt_env_amount"] - 0.5) * 2.0
         filt_env_mean = filt_env.mean(dim=1)
+        lfo_cutoff_mod = lfo_target[:, 0] * lfo_signal.mean(dim=1) * 0.3
         modulated_cutoff = (
-            params["filter_cutoff"] + amount * filt_env_mean * 0.3
+            params["filter_cutoff"] + amount * filt_env_mean * 0.3 + lfo_cutoff_mod
         ).clamp(0.0, 1.0)
 
         audio = self.filter(
@@ -89,7 +109,13 @@ class SubtractiveSynth(nn.Module):
         )
         audio = self.vca(audio, amp_env, params["master_gain"])
 
-        audio = self.distortion(audio, params["dist_amount"], params["dist_mix"])
+        # Distortion with LFO modulation
+        dist_mod = (
+            params["dist_amount"]
+            + lfo_target[:, 2] * lfo_signal.mean(dim=1) * 0.3
+        ).clamp(0.0, 1.0)
+        audio = self.distortion(audio, dist_mod, params["dist_mix"])
+
         audio = self.compressor(
             audio,
             params["comp_threshold"],
