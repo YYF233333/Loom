@@ -17,10 +17,12 @@ from loom.core import SAMPLE_RATE, N_SAMPLES
 
 def main():
     torch.manual_seed(42)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}")
     n_samples = 44100  # 1 second for reasonable speed
-    synth = SubtractiveSynth(SAMPLE_RATE, n_samples)
+    synth = SubtractiveSynth(SAMPLE_RATE, n_samples).to(device)
 
-    target_params = random_params(1)
+    target_params = random_params(1, device=device)
     with torch.no_grad():
         target_audio = synth(target_params)
 
@@ -42,7 +44,7 @@ def main():
             pred_params[key] = val.clone()
 
     optimizer = torch.optim.Adam(
-        [pred_params[k] for k in optimize_keys], lr=0.01
+        [pred_params[k] for k in optimize_keys], lr=0.005
     )
 
     losses = []
@@ -57,19 +59,20 @@ def main():
                 clamped[key] = val
         pred_audio = synth(clamped)
 
-        loss = torch.tensor(0.0)
+        loss = torch.tensor(0.0, device=device)
         for fft_size in [512, 1024, 2048]:
+            window = torch.hann_window(fft_size, device=device)
             target_stft = torch.stft(
                 target_audio[0], fft_size,
                 hop_length=fft_size // 4,
                 return_complex=True,
-                window=torch.hann_window(fft_size),
+                window=window,
             )
             pred_stft = torch.stft(
                 pred_audio[0], fft_size,
                 hop_length=fft_size // 4,
                 return_complex=True,
-                window=torch.hann_window(fft_size),
+                window=window,
             )
             loss = loss + (target_stft.abs() - pred_stft.abs()).pow(2).mean()
 
