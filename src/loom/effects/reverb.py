@@ -69,7 +69,6 @@ class Reverb(nn.Module):
         # Damping in [0.05, 0.95]
         damp = damping * 0.9 + 0.05  # (batch,)
 
-        # FFT of input
         n_fft = self.n_samples
         X = torch.fft.rfft(signal, n=n_fft)  # (batch, n_freq)
         n_freq = X.shape[1]
@@ -83,9 +82,10 @@ class Reverb(nn.Module):
             -1j * omega.unsqueeze(0).unsqueeze(0) * delays.unsqueeze(2)
         )  # (batch, 4, n_freq)
 
-        # Per-delay gain: gamma_i = g^(m_i / 1000)
-        # Normalization by 1000 keeps gains in a reasonable range
-        gamma = g.unsqueeze(1).pow(delays / 1000.0)  # (batch, 4)
+        # Constant gain per round-trip: larger rooms have proportionally
+        # longer RT60 (RT60 = -3 * delay_time / log10(gamma)).
+        # Compress g into high range so moderate decay produces audible tails.
+        gamma = g.clamp(min=1e-6).pow(0.15).unsqueeze(1).expand_as(delays)  # (batch, 4)
 
         # One-pole lowpass damping filter: H_lp(z) = (1-d) / (1 - d*z^{-1})
         z_inv = torch.exp(-1j * omega)  # (n_freq,)

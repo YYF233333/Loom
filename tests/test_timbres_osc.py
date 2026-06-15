@@ -142,7 +142,6 @@ class TestWavetableOscillatorTimbres:
                 f"Harmonic {k+1}: WT={wt_amps[k]:.1f}dB, Saw={saw_amps[k]:.1f}dB"
             )
 
-    @pytest.mark.xfail(reason="wavetable square frame has even harmonics — grid_sample boundary artifact")
     def test_position_1_matches_square(self):
         pitch = _pitch_from_hz(200.0)
         wt_audio = self._render_wt(pitch, 1.0)
@@ -151,7 +150,12 @@ class TestWavetableOscillatorTimbres:
         wt_amps = harmonic_amplitudes(wt_audio, SAMPLE_RATE, f0, 8)
         sq_amps = harmonic_amplitudes(sq_audio, SAMPLE_RATE, f0, 8)
         for k in range(8):
-            assert abs(wt_amps[k] - sq_amps[k]) < 2.0
+            if (k + 1) % 2 == 1:  # odd harmonics: tight match
+                assert abs(wt_amps[k] - sq_amps[k]) < 2.0
+            else:  # even harmonics: both should be far below fundamental
+                assert wt_amps[k] < wt_amps[0] - 90, (
+                    f"Even H{k+1}: {wt_amps[k]:.1f}dB should be >90dB below fundamental {wt_amps[0]:.1f}dB"
+                )
 
     def test_mid_position_centroid_between(self):
         pitch = _pitch_from_hz(200.0)

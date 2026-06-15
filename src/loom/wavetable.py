@@ -16,22 +16,22 @@ class WavetableOscillator(nn.Module):
     MIDI_MIN = 24
     MIDI_MAX = 96
 
-    def __init__(self, sample_rate: int, n_samples: int, n_frames: int = 16, frame_size: int = 2048):
+    def __init__(self, sample_rate: int, n_samples: int, n_frames: int = 16, frame_size: int = 2048, max_harmonics: int = 128):
         super().__init__()
         self.sample_rate = sample_rate
         self.n_samples = n_samples
         self.n_frames = n_frames
         self.frame_size = frame_size
 
-        wavetable = self._build_default_wavetable(n_frames, frame_size)
+        wavetable = self._build_default_wavetable(n_frames, frame_size, max_harmonics)
         self.register_buffer("wavetable", wavetable)
 
         t = torch.arange(n_samples, dtype=torch.float32) / sample_rate
         self.register_buffer("t", t)
 
-    def _build_default_wavetable(self, n_frames: int, frame_size: int) -> torch.Tensor:
+    def _build_default_wavetable(self, n_frames: int, frame_size: int, max_harmonics: int) -> torch.Tensor:
         """Build saw-to-square morph wavetable."""
-        n_harmonics = frame_size // 2
+        n_harmonics = min(frame_size // 2, max_harmonics)
         n = torch.arange(1, n_harmonics + 1, dtype=torch.float32)
         phase = torch.linspace(0, 2 * math.pi, frame_size, dtype=torch.float32).unsqueeze(0)
         harmonics = torch.sin(n.unsqueeze(1) * phase)

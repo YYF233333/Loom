@@ -287,7 +287,6 @@ class TestReverbTimbres:
         tail = audio[int(SAMPLE_RATE * 0.5):]
         assert np.sqrt(np.mean(tail ** 2)) > 1e-4
 
-    @pytest.mark.xfail(reason="FDN reverb: room_size scaling doesn't monotonically increase tail energy")
     def test_larger_room_longer_tail(self):
         signal = self._impulse()
         tails = []
@@ -300,13 +299,14 @@ class TestReverbTimbres:
                 torch.tensor([0.5], device=DEVICE),
             )
             audio = out[0].detach().cpu().numpy()
-            tail_rms = np.sqrt(np.mean(audio[int(SAMPLE_RATE * 1.5):] ** 2))
+            # Bounded window avoids circular wrapping artifacts from freq-domain FDN
+            tail_rms = np.sqrt(np.mean(audio[int(SAMPLE_RATE * 1.5):int(SAMPLE_RATE * 2.5)] ** 2))
             tails.append(tail_rms)
         assert tails[1] > tails[0]
 
     def test_damping_reduces_high_freq(self):
         signal = self._impulse()
-        centroids = []
+        mid_low_ratios = []
         for damp in [0.2, 0.8]:
             out = self.reverb(
                 signal,
@@ -316,8 +316,15 @@ class TestReverbTimbres:
                 torch.tensor([0.5], device=DEVICE),
             )
             tail = out[0].detach().cpu().numpy()[int(SAMPLE_RATE * 0.5):]
-            centroids.append(spectral_centroid(tail, SAMPLE_RATE))
-        assert centroids[1] < centroids[0]
+            fft = np.abs(np.fft.rfft(tail))
+            freqs = np.fft.rfftfreq(len(tail), 1.0 / SAMPLE_RATE)
+            low_energy = np.sum(fft[freqs < 500] ** 2)
+            mid_energy = np.sum(fft[(freqs >= 500) & (freqs < 5000)] ** 2)
+            mid_low_ratios.append(mid_energy / (low_energy + 1e-20))
+        assert mid_low_ratios[1] < mid_low_ratios[0], (
+            f"High damping should reduce mid/low energy ratio: "
+            f"damp=0.2 ratio={mid_low_ratios[0]:.6f}, damp=0.8 ratio={mid_low_ratios[1]:.6f}"
+        )
 
 
 class TestEQTimbres:
