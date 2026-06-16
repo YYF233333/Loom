@@ -153,10 +153,9 @@ def train(args):
                 # Two-stage backward with EMA gradient balancing
                 optimizer.zero_grad()
                 loss.backward(retain_graph=True)
-                gn_p = sum(
-                    p.grad.norm().item() ** 2
-                    for p in model.parameters() if p.grad is not None
-                ) ** 0.5
+                gn_p = torch.stack([
+                    p.grad.norm() for p in model.parameters() if p.grad is not None
+                ]).norm().item()
                 saved_grads = [
                     p.grad.detach().clone() for p in model.parameters()
                     if p.grad is not None
@@ -164,10 +163,9 @@ def train(args):
 
                 model.zero_grad()
                 l_spectral.backward()
-                gn_s = sum(
-                    p.grad.norm().item() ** 2
-                    for p in model.parameters() if p.grad is not None
-                ) ** 0.5
+                gn_s = torch.stack([
+                    p.grad.norm() for p in model.parameters() if p.grad is not None
+                ]).norm().item()
 
                 if ema_gn_param == 0.0:
                     ema_gn_param = gn_p
