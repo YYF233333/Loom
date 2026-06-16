@@ -259,7 +259,7 @@ def train(args):
         epoch = 0
         pool_round = 0
         while epoch < args.epochs:
-            new_stage = get_curriculum_stage(epoch, args)
+            new_stage = max(cur_stage, get_curriculum_stage(epoch, args))
             if new_stage != cur_stage:
                 cur_stage = new_stage
                 scheduler, val_mels, val_params = advance_stage(cur_stage, epoch)
