@@ -6,17 +6,16 @@ from loom.training.dataset import N_CONTINUOUS, CATEGORICAL_KEYS
 def param_loss(pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
     continuous_mse = (pred[:, :N_CONTINUOUS] - target[:, :N_CONTINUOUS]).pow(2).mean()
 
-    cat_ce = torch.tensor(0.0, device=pred.device)
+    cat_parts = []
     idx = N_CONTINUOUS
-    n_groups = 0
     for _, n in CATEGORICAL_KEYS:
         pred_logp = pred[:, idx:idx + n].clamp(1e-7, 1.0).log()
         target_p = target[:, idx:idx + n]
-        cat_ce = cat_ce + (-target_p * pred_logp).sum(dim=-1).mean()
+        cat_parts.append((-target_p * pred_logp).sum(dim=-1).mean())
         idx += n
-        n_groups += 1
 
-    return continuous_mse + 0.5 * (cat_ce / n_groups)
+    cat_ce = torch.stack(cat_parts).mean()
+    return continuous_mse + 0.5 * cat_ce
 
 
 _HANN_CACHE: dict[tuple, torch.Tensor] = {}
@@ -27,8 +26,8 @@ def multi_resolution_stft_loss(
     target_audio: torch.Tensor,
     fft_sizes: list[int] = [512, 1024, 2048],
 ) -> torch.Tensor:
-    loss = torch.tensor(0.0, device=pred_audio.device)
     combined = torch.cat([pred_audio, target_audio], dim=0)
+    parts = []
 
     for fft_size in fft_sizes:
         key = (fft_size, pred_audio.device)
@@ -43,9 +42,9 @@ def multi_resolution_stft_loss(
         ).abs()
         pred_mag, target_mag = combined_mag.chunk(2, dim=0)
 
-        loss = loss + (pred_mag - target_mag).abs().mean()
-        loss = loss + (
-            torch.log(pred_mag + 1e-7) - torch.log(target_mag + 1e-7)
-        ).abs().mean()
+        parts.append((pred_mag - target_mag).abs().mean())
+        parts.append(
+            (torch.log(pred_mag + 1e-7) - torch.log(target_mag + 1e-7)).abs().mean()
+        )
 
-    return loss / len(fft_sizes)
+    return torch.stack(parts).mean()

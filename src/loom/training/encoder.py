@@ -14,26 +14,26 @@ class ParamEncoder(nn.Module):
         self.categorical_groups = CATEGORICAL_KEYS
 
         self.backbone = nn.Sequential(
-            nn.Conv1d(n_mels, 128, 3, padding=1),
+            nn.Conv1d(n_mels, 64, 3, padding=1),
+            nn.BatchNorm1d(64),
+            nn.ReLU(),
+            nn.Conv1d(64, 128, 3, stride=2, padding=1),
+            nn.BatchNorm1d(128),
+            nn.ReLU(),
+            nn.Conv1d(128, 128, 3, stride=2, padding=1),
             nn.BatchNorm1d(128),
             nn.ReLU(),
             nn.Conv1d(128, 256, 3, stride=2, padding=1),
             nn.BatchNorm1d(256),
             nn.ReLU(),
-            nn.Conv1d(256, 256, 3, stride=2, padding=1),
-            nn.BatchNorm1d(256),
-            nn.ReLU(),
-            nn.Conv1d(256, 512, 3, stride=2, padding=1),
-            nn.BatchNorm1d(512),
-            nn.ReLU(),
             nn.AdaptiveAvgPool1d(1),
         )
 
         self.head = nn.Sequential(
-            nn.Linear(512, 256),
+            nn.Linear(256, 128),
             nn.ReLU(),
-            nn.Dropout(0.1),
-            nn.Linear(256, N_PARAMS),
+            nn.Dropout(0.2),
+            nn.Linear(128, N_PARAMS),
         )
 
     def forward(self, mel: torch.Tensor) -> torch.Tensor:
