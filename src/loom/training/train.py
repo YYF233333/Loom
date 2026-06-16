@@ -334,10 +334,12 @@ def train(args):
 
         epoch = 0
         pool_round = 0
+        stage_history = []
         while epoch < args.epochs:
             new_stage = max(cur_stage, get_curriculum_stage(epoch, args))
             if new_stage != cur_stage:
                 cur_stage = new_stage
+                stage_history = []
                 scheduler, val_mels, val_params = advance_stage(cur_stage, epoch)
                 ema_state = {"gn_param": 0.0, "gn_spectral": 0.0}
                 best_val = float("inf")
@@ -387,16 +389,24 @@ def train(args):
                         f" | {elapsed:.0f}s{marker}"
                     )
 
-                # Curriculum: early advance when stage plateaus
-                if args.curriculum and args.stage_patience and patience_counter >= args.stage_patience and cur_stage < 3:
-                    print(f"  Stage {cur_stage} converged at epoch {epoch} (patience={args.stage_patience}), advancing...")
-                    cur_stage += 1
-                    scheduler, val_mels, val_params = advance_stage(cur_stage, epoch)
-                    ema_state = {"gn_param": 0.0, "gn_spectral": 0.0}
-                    best_val = float("inf")
-                    patience_counter = 0
-                    advance_now = True
-                    break
+                # Curriculum: advance when relative improvement stalls
+                if args.curriculum and cur_stage < 3:
+                    stage_history.append(val_p)
+                    window = args.stage_patience
+                    if len(stage_history) >= window * 2:
+                        old_best = min(stage_history[-window * 2:-window])
+                        new_best = min(stage_history[-window:])
+                        improvement = (old_best - new_best) / (abs(old_best) + 1e-8)
+                        if improvement < args.stage_min_improvement:
+                            print(f"  Stage {cur_stage} plateau: improvement {improvement:.4%} < {args.stage_min_improvement:.1%} over {window} ep, advancing...")
+                            cur_stage += 1
+                            scheduler, val_mels, val_params = advance_stage(cur_stage, epoch)
+                            ema_state = {"gn_param": 0.0, "gn_spectral": 0.0}
+                            best_val = float("inf")
+                            patience_counter = 0
+                            stage_history = []
+                            advance_now = True
+                            break
 
                 # Global early stopping
                 if args.patience and patience_counter >= args.patience:
@@ -517,7 +527,9 @@ if __name__ == "__main__":
     parser.add_argument("--stage-epochs", type=int, default=0,
                         help="Epochs per curriculum stage (0=auto: epochs/4)")
     parser.add_argument("--stage-patience", type=int, default=20,
-                        help="Advance to next stage after N epochs without improvement")
+                        help="Window size for relative improvement check (compare best of last N vs previous N)")
+    parser.add_argument("--stage-min-improvement", type=float, default=0.01,
+                        help="Minimum relative improvement to stay in current stage (default 1%%)")
     # Model
     parser.add_argument("--arch", type=str, default="transformer",
                         choices=["transformer", "hybrid", "v1"],
