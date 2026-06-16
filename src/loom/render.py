@@ -38,6 +38,7 @@ def random_params(batch: int, device: torch.device = DEVICE) -> dict[str, torch.
         "filt_env_sustain": _rand((batch,)),
         "filt_env_release": _rand((batch,)),
         "filt_env_amount": _rand((batch,)),
+        "filter_mix": _rand((batch,)),
         "dist_amount": _rand((batch,)),
         "dist_mix": _rand((batch,)),
         "master_gain": _rand((batch,)),
@@ -60,6 +61,7 @@ def random_params(batch: int, device: torch.device = DEVICE) -> dict[str, torch.
         "eq_low_gain": _rand((batch,)),
         "eq_mid_gain": _rand((batch,)),
         "eq_high_gain": _rand((batch,)),
+        "fx_routing": torch.randn(batch, 6, 6, device=device),
     }
 
 

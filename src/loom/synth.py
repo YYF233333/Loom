@@ -7,38 +7,28 @@ from loom.fm import FMOscillator
 from loom.envelope import ADSR
 from loom.svfilter import SVFilter
 from loom.amplifier import VCA
-from loom.effects.distortion import Distortion
-from loom.effects.compressor import Compressor
-from loom.effects.chorus import Chorus
-from loom.effects.delay import Delay
-from loom.effects.reverb import Reverb
-from loom.effects.eq import EQ
+from loom.effects.chain import EffectsChain
 from loom.lfo import LFO
 
 
 class SubtractiveSynth(nn.Module):
-    """Complete subtractive synthesizer with full effects chain.
+    """Complete subtractive synthesizer with Sinkhorn-routed effects chain.
 
     Signal flow:
         Oscillator -> Filter (with envelope) -> VCA (with envelope)
-        -> Distortion -> Compressor -> Chorus -> Delay -> Reverb -> EQ
+        -> EffectsChain (Sinkhorn-routed or fixed canonical order)
     """
 
-    def __init__(self, sample_rate: int, n_samples: int):
+    def __init__(self, sample_rate: int, n_samples: int, note_on_duration: float = 3.0):
         super().__init__()
         self.oscillator = AdditiveOscillator(sample_rate, n_samples)
         self.wavetable_osc = WavetableOscillator(sample_rate, n_samples)
         self.fm_osc = FMOscillator(sample_rate, n_samples)
-        self.amp_envelope = ADSR(sample_rate, n_samples)
-        self.filter_envelope = ADSR(sample_rate, n_samples)
+        self.amp_envelope = ADSR(sample_rate, n_samples, note_on_duration=note_on_duration)
+        self.filter_envelope = ADSR(sample_rate, n_samples, note_on_duration=note_on_duration)
         self.filter = SVFilter(sample_rate)
         self.vca = VCA()
-        self.distortion = Distortion()
-        self.compressor = Compressor()
-        self.chorus = Chorus(sample_rate, n_samples)
-        self.delay = Delay(sample_rate, n_samples)
-        self.reverb = Reverb(sample_rate, n_samples)
-        self.eq = EQ(sample_rate)
+        self.effects_chain = EffectsChain(sample_rate, n_samples)
         self.lfo = LFO(sample_rate, n_samples)
 
     def forward(self, params: dict[str, torch.Tensor]) -> torch.Tensor:
@@ -90,7 +80,8 @@ class SubtractiveSynth(nn.Module):
         lfo_cutoff = lfo_target[:, 0:1] * lfo_signal * 0.3
         cutoff_signal = (base_cutoff + env_mod + lfo_cutoff).clamp(0.0, 1.0)
 
-        audio = self.filter(audio, cutoff_signal, params["filter_q"], params["filter_type"])
+        audio = self.filter(audio, cutoff_signal, params["filter_q"], params["filter_type"],
+                            mix=params.get("filter_mix"))
 
         # Amplitude envelope + VCA
         amp_env = self.amp_envelope(
@@ -99,23 +90,38 @@ class SubtractiveSynth(nn.Module):
         )
         audio = self.vca(audio, amp_env, params["master_gain"])
 
-        # Distortion: per-sample drive
+        # Effects chain (Sinkhorn-routed when fx_routing provided)
         dist_lfo = lfo_target[:, 2:3] * lfo_signal * 0.3
         dist_drive = (params["dist_amount"].unsqueeze(1) + dist_lfo).clamp(0.0, 1.0)
-        audio = self.distortion(audio, dist_drive, params["dist_mix"])
 
-        # Rest of effects chain unchanged
-        audio = self.compressor(
-            audio, params["comp_threshold"], params["comp_ratio"],
-            params["comp_attack"], params["comp_release"],
-            params["comp_makeup"], params["comp_mix"],
-        )
-        audio = self.chorus(audio, params["chorus_rate"], params["chorus_depth"], params["chorus_mix"])
-        audio = self.delay(audio, params["delay_time"], params["delay_feedback"], params["delay_mix"])
-        audio = self.reverb(
-            audio, params["reverb_room_size"], params["reverb_decay"],
-            params["reverb_damping"], params["reverb_mix"],
-        )
-        audio = self.eq(audio, params["eq_low_gain"], params["eq_mid_gain"], params["eq_high_gain"])
+        fx_params = {
+            "dist_drive": dist_drive,
+            "dist_mix": params["dist_mix"],
+            "comp_threshold": params["comp_threshold"],
+            "comp_ratio": params["comp_ratio"],
+            "comp_attack": params["comp_attack"],
+            "comp_release": params["comp_release"],
+            "comp_makeup": params["comp_makeup"],
+            "comp_mix": params["comp_mix"],
+            "chorus_rate": params["chorus_rate"],
+            "chorus_depth": params["chorus_depth"],
+            "chorus_mix": params["chorus_mix"],
+            "delay_time": params["delay_time"],
+            "delay_feedback": params["delay_feedback"],
+            "delay_mix": params["delay_mix"],
+            "reverb_room_size": params["reverb_room_size"],
+            "reverb_decay": params["reverb_decay"],
+            "reverb_damping": params["reverb_damping"],
+            "reverb_mix": params["reverb_mix"],
+            "eq_low_gain": params["eq_low_gain"],
+            "eq_mid_gain": params["eq_mid_gain"],
+            "eq_high_gain": params["eq_high_gain"],
+        }
+
+        routing = params.get("fx_routing")
+        tau = params.get("fx_routing_tau", 1.0)
+        if isinstance(tau, torch.Tensor):
+            tau = tau.item()
+        audio = self.effects_chain(audio, fx_params, routing_logits=routing, tau=tau)
 
         return audio

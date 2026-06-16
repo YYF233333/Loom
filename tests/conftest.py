@@ -1,22 +1,18 @@
 import torch
+import numpy as np
 import pytest
 import os
-from loom.core import DEVICE
+from scipy.io import wavfile
+from loom.core import SAMPLE_RATE, DEVICE
 
 FIXTURES_DIR = os.path.join(os.path.dirname(__file__), "fixtures")
-GOLDEN_DIR = os.path.join(FIXTURES_DIR, "golden")
 REFERENCE_DIR = os.path.join(FIXTURES_DIR, "reference")
-
-
-def pytest_addoption(parser):
-    parser.addoption(
-        "--update-golden", action="store_true", default=False,
-        help="Regenerate golden audio snapshots",
-    )
+TEST_OUTPUT_DIR = os.path.join(os.path.dirname(__file__), "output")
 
 
 def pytest_configure(config):
     config.addinivalue_line("markers", "reference: tests requiring Serum reference audio files")
+    os.makedirs(TEST_OUTPUT_DIR, exist_ok=True)
 
 
 def pytest_report_header():
@@ -28,15 +24,19 @@ def pytest_report_header():
 
 
 @pytest.fixture
-def update_golden(request):
-    return request.config.getoption("--update-golden")
-
-
-@pytest.fixture
-def golden_dir():
-    return GOLDEN_DIR
-
-
-@pytest.fixture
 def reference_dir():
     return REFERENCE_DIR
+
+
+def save_test_wav(audio, name, sample_rate=SAMPLE_RATE):
+    """Save test-generated audio to tests/output/ for manual inspection."""
+    if hasattr(audio, "detach"):
+        audio = audio.detach().cpu().float().numpy()
+    audio = np.asarray(audio, dtype=np.float64).flatten()
+    peak = np.abs(audio).max()
+    if peak > 1e-8:
+        audio = audio / peak * 0.9
+    audio_16 = np.clip(audio * 32767, -32768, 32767).astype(np.int16)
+    path = os.path.join(TEST_OUTPUT_DIR, f"{name}.wav")
+    wavfile.write(path, sample_rate, audio_16)
+    return path

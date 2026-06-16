@@ -36,7 +36,7 @@ class SVFilter(nn.Module):
         log_max = math.log(self.MAX_Q)
         return torch.exp(q * (log_max - log_min) + log_min)
 
-    def forward(self, signal, cutoff, q, filter_type):
+    def forward(self, signal, cutoff, q, filter_type, mix=None):
         """Apply SVF with time-varying cutoff.
 
         Args:
@@ -44,6 +44,8 @@ class SVFilter(nn.Module):
             cutoff: (batch, n_samples) normalized cutoff [0,1] per sample.
             q: (batch,) normalized Q [0,1].
             filter_type: (batch, 3) blend weights [LP, HP, BP].
+            mix: (batch,) dry/wet blend [0,1]. 0=bypass, 1=fully filtered.
+                If None, fully filtered (backward compatible).
         """
         batch, n_samples = signal.shape
         device = signal.device
@@ -106,4 +108,9 @@ class SVFilter(nn.Module):
 
         # Reshape back and trim padding
         output = result.reshape(batch, n_padded)[:, :n_samples]
+
+        if mix is not None:
+            mix = mix.unsqueeze(1)
+            output = mix * output + (1.0 - mix) * signal
+
         return output
