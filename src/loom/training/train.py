@@ -84,6 +84,14 @@ def train(args):
     n_model_params = sum(p.numel() for p in model.parameters())
     print(f"Encoder params: {n_model_params:,}")
 
+    if args.resume:
+        ckpt_path = Path(args.resume)
+        if not ckpt_path.exists():
+            ckpt_path = data_dir / args.resume
+        state = torch.load(ckpt_path, weights_only=True)
+        model.load_state_dict(state)
+        print(f"Resumed from {ckpt_path}")
+
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=1e-5)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
 
@@ -248,6 +256,8 @@ if __name__ == "__main__":
                         help="Spectral/param gradient balance ratio (1.0 = equal)")
     parser.add_argument("--patience", type=int, default=0)
     parser.add_argument("--regenerate", action="store_true")
+    parser.add_argument("--resume", type=str, default=None,
+                        help="Path to checkpoint to resume from (or filename in data-dir)")
     parser.add_argument("--amp", action="store_true", help="Enable mixed precision (fp16)")
     args = parser.parse_args()
     train(args)
