@@ -128,6 +128,7 @@ def generate_dataset(
     for i in range(n_batches):
         bs = min(gen_batch_size, n_samples - offset)
         params = random_params(bs, device=device)
+        params.pop("fx_routing", None)
 
         with torch.no_grad():
             audio = synth(params)
