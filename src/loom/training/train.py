@@ -138,7 +138,8 @@ def train_epoch(model, train_mels, train_params, bs, optimizer, scaler, use_amp,
                 pred_p_sub = vector_to_params(pred_sub)
                 pred_p_sub.pop("fx_routing", None)
                 pred_result_sub = synth(pred_p_sub, return_intermediates=True)
-                pred_audio_sub, pred_inter_sub = pred_result_sub
+                pred_audio_sub = pred_result_sub[0].clamp(-10.0, 10.0)
+                pred_inter_sub = {k: v.clamp(-10.0, 10.0) for k, v in pred_result_sub[1].items()}
 
                 with torch.no_grad():
                     target_sub = target[sub_slice]
@@ -148,13 +149,18 @@ def train_epoch(model, train_mels, train_params, bs, optimizer, scaler, use_amp,
                     if cached_audio is not None:
                         target_audio_sub = cached_audio[sub_slice]
                     else:
-                        target_audio_sub = target_result_sub[0]
-                    target_inter_sub = target_result_sub[1]
+                        target_audio_sub = target_result_sub[0].clamp(-10.0, 10.0)
+                    target_inter_sub = {k: v.clamp(-10.0, 10.0) for k, v in target_result_sub[1].items()}
 
                 l_spec_sub = multi_resolution_stft_loss(pred_audio_sub, target_audio_sub)
                 l_chain_sub = signal_chain_loss(pred_inter_sub, target_inter_sub)
                 l_sub = (l_spec_sub + l_chain_sub) / n_sub
-                l_sub.backward(retain_graph=not is_last)
+                if torch.isfinite(l_sub):
+                    l_sub.backward(retain_graph=not is_last)
+                else:
+                    if is_last:
+                        pred_sub.sum().mul(0).backward()
+                    continue
 
                 if l_spectral_total is None:
                     l_spectral_total = l_sub.detach()
@@ -174,14 +180,18 @@ def train_epoch(model, train_mels, train_params, bs, optimizer, scaler, use_amp,
                 ema_state["gn_spectral"] = 0.99 * ema_state["gn_spectral"] + 0.01 * gn_s
 
             alpha = args.spectral_ratio * ema_state["gn_param"] / (ema_state["gn_spectral"] + 1e-8)
+            alpha = min(alpha, 10.0)
             gi = 0
             for p in model.parameters():
                 if p.grad is not None:
                     p.grad.mul_(alpha).add_(saved_grads[gi])
                     gi += 1
 
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-            optimizer.step()
+            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            if torch.isfinite(grad_norm):
+                optimizer.step()
+            else:
+                optimizer.zero_grad()
             p_loss_acc += loss_p.item()
             s_loss_acc += l_spectral_total.item()
         else:
