@@ -129,9 +129,11 @@ def train_epoch(model, train_mels, train_params, bs, optimizer, scaler, use_amp,
             n_sub = max(1, (len(idx) + spectral_batch_size - 1) // spectral_batch_size)
             l_spectral_total = None
 
-            for sub_start in range(0, len(idx), spectral_batch_size):
+            sub_starts = list(range(0, len(idx), spectral_batch_size))
+            for si_idx, sub_start in enumerate(sub_starts):
                 sub_slice = slice(sub_start, sub_start + spectral_batch_size)
                 pred_sub = pred[sub_slice]
+                is_last = (si_idx == len(sub_starts) - 1)
 
                 pred_p_sub = vector_to_params(pred_sub)
                 pred_p_sub.pop("fx_routing", None)
@@ -152,7 +154,7 @@ def train_epoch(model, train_mels, train_params, bs, optimizer, scaler, use_amp,
                 l_spec_sub = multi_resolution_stft_loss(pred_audio_sub, target_audio_sub)
                 l_chain_sub = signal_chain_loss(pred_inter_sub, target_inter_sub)
                 l_sub = (l_spec_sub + l_chain_sub) / n_sub
-                l_sub.backward()
+                l_sub.backward(retain_graph=not is_last)
 
                 if l_spectral_total is None:
                     l_spectral_total = l_sub.detach()
