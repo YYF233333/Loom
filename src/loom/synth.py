@@ -31,7 +31,7 @@ class SubtractiveSynth(nn.Module):
         self.effects_chain = EffectsChain(sample_rate, n_samples)
         self.lfo = LFO(sample_rate, n_samples)
 
-    def forward(self, params: dict[str, torch.Tensor]) -> torch.Tensor:
+    def forward(self, params: dict[str, torch.Tensor], return_intermediates: bool = False) -> torch.Tensor:
         n_samples = self.oscillator.n_samples
 
         # LFO signal: (batch, n_samples)
@@ -99,6 +99,8 @@ class SubtractiveSynth(nn.Module):
                     freq_mod=fm_arg[idx] if fm_arg is not None else None,
                 )
 
+        osc_out = audio
+
         # Filter: time-varying cutoff (envelope + LFO)
         filt_env = self.filter_envelope(
             params["filt_env_attack"], params["filt_env_decay"],
@@ -112,6 +114,8 @@ class SubtractiveSynth(nn.Module):
 
         audio = self.filter(audio, cutoff_signal, params["filter_q"], params["filter_type"],
                             mix=params.get("filter_mix"))
+
+        filter_out = audio
 
         # Amplitude envelope + VCA
         amp_env = self.amp_envelope(
@@ -152,6 +156,10 @@ class SubtractiveSynth(nn.Module):
         tau = params.get("fx_routing_tau", 1.0)
         if isinstance(tau, torch.Tensor):
             tau = tau.item()
+        dry_out = audio
+
         audio = self.effects_chain(audio, fx_params, routing_logits=routing, tau=tau)
 
+        if return_intermediates:
+            return audio, {"osc": osc_out, "filter": filter_out, "dry": dry_out}
         return audio

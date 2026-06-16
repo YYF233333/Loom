@@ -21,6 +21,25 @@ def param_loss(pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
 _HANN_CACHE: dict[tuple, torch.Tensor] = {}
 
 
+def signal_chain_loss(
+    pred_intermediates: dict[str, torch.Tensor],
+    target_intermediates: dict[str, torch.Tensor],
+    weights: dict[str, float] | None = None,
+) -> torch.Tensor:
+    """DiffMoog-style signal-chain loss: supervise each stage independently."""
+    if weights is None:
+        weights = {"osc": 1.0, "filter": 0.5, "dry": 0.3}
+    parts = []
+    for key, w in weights.items():
+        if key in pred_intermediates and key in target_intermediates:
+            pred = pred_intermediates[key]
+            target = target_intermediates[key]
+            parts.append(w * multi_resolution_stft_loss(pred, target))
+    if not parts:
+        return torch.tensor(0.0, device=next(iter(pred_intermediates.values())).device)
+    return torch.stack(parts).sum()
+
+
 def multi_resolution_stft_loss(
     pred_audio: torch.Tensor,
     target_audio: torch.Tensor,

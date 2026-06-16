@@ -27,14 +27,14 @@ from loom.training.dataset import (
     generate_dataset, load_dataset, vector_to_params, params_to_vector,
 )
 from loom.training.encoder import ParamEncoder
-from loom.training.losses import param_loss, multi_resolution_stft_loss
+from loom.training.losses import param_loss, multi_resolution_stft_loss, signal_chain_loss
 from loom.synth import SubtractiveSynth
 
 
-def generate_pool(n_samples, synth, mel_transform, amp_to_db, gen_batch_size, device):
+def generate_pool(n_samples, synth, mel_transform, amp_to_db, gen_batch_size, device, stage=99):
     """Generate a pool of (mels, params) directly on GPU. Zero disk I/O."""
     with torch.no_grad():
-        probe_p = random_params(1, device=device)
+        probe_p = random_params(1, device=device, stage=stage)
         probe_p.pop("fx_routing", None)
         probe_m = amp_to_db(mel_transform(synth(probe_p)))
     n_mels, n_frames = probe_m.shape[1], probe_m.shape[2]
@@ -45,7 +45,7 @@ def generate_pool(n_samples, synth, mel_transform, amp_to_db, gen_batch_size, de
 
     for offset in range(0, n_samples, gen_batch_size):
         bs = min(gen_batch_size, n_samples - offset)
-        params = random_params(bs, device=device)
+        params = random_params(bs, device=device, stage=stage)
         params.pop("fx_routing", None)
         with torch.no_grad():
             audio = synth(params)
@@ -82,15 +82,22 @@ def train_epoch(model, train_mels, train_params, bs, optimizer, scaler, use_amp,
             cached_audio = train_audio[idx].to(mel.device) if train_audio is not None else None
             pred_p = vector_to_params(pred)
             pred_p.pop("fx_routing", None)
-            pred_audio = synth(pred_p)
+            pred_result = synth(pred_p, return_intermediates=True)
+            pred_audio, pred_inter = pred_result
+
+            with torch.no_grad():
+                target_p = vector_to_params(target)
+                target_p.pop("fx_routing", None)
+                target_result = synth(target_p, return_intermediates=True)
+                target_audio_synth, target_inter = target_result
             if cached_audio is not None:
                 target_audio = cached_audio
             else:
-                with torch.no_grad():
-                    target_p = vector_to_params(target)
-                    target_p.pop("fx_routing", None)
-                    target_audio = synth(target_p)
+                target_audio = target_audio_synth
+
             l_spectral = multi_resolution_stft_loss(pred_audio, target_audio)
+            l_chain = signal_chain_loss(pred_inter, target_inter)
+            l_spectral = l_spectral + l_chain
 
             optimizer.zero_grad()
             loss.backward(retain_graph=True)
@@ -151,6 +158,18 @@ def validate(model, val_mels, val_params, bs):
     return loss_acc / n_batches
 
 
+STAGE_NAMES = {0: "osc only", 1: "osc+filter", 2: "osc+filter+env", 3: "mild FX", 99: "full"}
+
+
+def get_curriculum_stage(epoch, args):
+    """Determine curriculum stage for the current epoch."""
+    if not args.curriculum:
+        return args.stage
+    stage_len = args.stage_epochs if args.stage_epochs > 0 else max(1, args.epochs // 4)
+    stage = min(epoch // stage_len, 3)
+    return stage
+
+
 def train(args):
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
@@ -208,21 +227,37 @@ def train(args):
         amp_to_db = T.AmplitudeToDB(top_db=80)
 
         n_val = max(1000, args.pool_size // 10)
-        print(f"Generating fixed validation set ({n_val} samples)...")
+        cur_stage = get_curriculum_stage(0, args)
+        print(f"Generating fixed validation set ({n_val} samples, stage {cur_stage}: {STAGE_NAMES.get(cur_stage, '?')})...")
         val_mels, val_params = generate_pool(
             n_val, synth_gen, mel_transform, amp_to_db,
-            args.gen_batch_size, DEVICE,
+            args.gen_batch_size, DEVICE, stage=cur_stage,
         )
-        print(f"Pool mode: {args.pool_size} samples/pool, {args.pool_epochs} epochs/pool")
+        if args.curriculum:
+            print(f"Curriculum mode: stages 0→3, pool {args.pool_size}, {args.pool_epochs} ep/pool")
+        else:
+            print(f"Pool mode: {args.pool_size} samples/pool, {args.pool_epochs} epochs/pool, stage={cur_stage}")
 
         epoch = 0
         pool_round = 0
         while epoch < args.epochs:
+            new_stage = get_curriculum_stage(epoch, args)
+            if new_stage != cur_stage:
+                cur_stage = new_stage
+                print(f"\n>>> CURRICULUM STAGE {cur_stage}: {STAGE_NAMES.get(cur_stage, '?')} <<<")
+                # Regenerate validation set for new stage
+                val_mels, val_params = generate_pool(
+                    n_val, synth_gen, mel_transform, amp_to_db,
+                    args.gen_batch_size, DEVICE, stage=cur_stage,
+                )
+                best_val = float("inf")
+                patience_counter = 0
+
             pool_round += 1
             t_pool = time.perf_counter()
             train_mels, train_params = generate_pool(
                 args.pool_size, synth_gen, mel_transform, amp_to_db,
-                args.gen_batch_size, DEVICE,
+                args.gen_batch_size, DEVICE, stage=cur_stage,
             )
             gen_time = time.perf_counter() - t_pool
             vram_gb = torch.cuda.memory_allocated() / 1e9
@@ -251,8 +286,9 @@ def train(args):
 
                 if epoch % args.log_every == 0 or marker:
                     elapsed = time.perf_counter() - t0
+                    stage_str = f" S{cur_stage}" if args.curriculum or args.stage != 99 else ""
                     print(
-                        f"Epoch {epoch:3d}/{args.epochs} (pool {pool_round})"
+                        f"Epoch {epoch:3d}/{args.epochs} (pool {pool_round}){stage_str}"
                         f" | train {train_loss:.6f} | val {val_loss:.6f}"
                         f" | lr {optimizer.param_groups[0]['lr']:.2e}"
                         f" | {elapsed:.0f}s{marker}"
@@ -364,6 +400,13 @@ if __name__ == "__main__":
     parser.add_argument("--resume", type=str, default=None)
     parser.add_argument("--amp", action="store_true", help="Enable mixed precision")
     parser.add_argument("--compile", action="store_true", help="torch.compile the model")
+    # Curriculum
+    parser.add_argument("--curriculum", action="store_true",
+                        help="Enable curriculum learning (stage 0→1→2→3)")
+    parser.add_argument("--stage", type=int, default=99,
+                        help="Fixed curriculum stage (0-3, 99=full). Ignored with --curriculum")
+    parser.add_argument("--stage-epochs", type=int, default=0,
+                        help="Epochs per curriculum stage (0=auto: epochs/4)")
     # Model
     parser.add_argument("--d-model", type=int, default=160)
     parser.add_argument("--d-state", type=int, default=64)
