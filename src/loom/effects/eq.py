@@ -22,6 +22,7 @@ class EQ(nn.Module):
     def __init__(self, sample_rate: int):
         super().__init__()
         self.sample_rate = sample_rate
+        self._freq_cache: dict[tuple, tuple] = {}
 
     def _denorm_gain(self, gain: torch.Tensor) -> torch.Tensor:
         """[0,1] -> [-12dB, +12dB] -> linear amplitude A for shelf/peak."""
@@ -42,11 +43,14 @@ class EQ(nn.Module):
             (batch, n_fft // 2 + 1) complex frequency response.
         """
         n_bins = n_fft // 2 + 1
-        w = torch.linspace(0, math.pi, n_bins, device=a.device)  # (n_bins,)
-
-        # e^{-jw}, e^{-j2w}
-        ej1 = torch.exp(-1j * w)  # (n_bins,)
-        ej2 = torch.exp(-2j * w)  # (n_bins,)
+        cache_key = (n_fft, a.device)
+        if cache_key in self._freq_cache:
+            ej1, ej2 = self._freq_cache[cache_key]
+        else:
+            w = torch.linspace(0, math.pi, n_bins, device=a.device)
+            ej1 = torch.exp(-1j * w)
+            ej2 = torch.exp(-2j * w)
+            self._freq_cache[cache_key] = (ej1, ej2)
 
         # B(w) = b0 + b1*e^{-jw} + b2*e^{-j2w}
         b0 = b[:, 0:1]  # (batch, 1)

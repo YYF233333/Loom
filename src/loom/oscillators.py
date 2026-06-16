@@ -26,6 +26,7 @@ class AdditiveOscillator(nn.Module):
         self.max_harmonics = max_harmonics
         t = torch.arange(n_samples, dtype=torch.float32) / sample_rate
         self.register_buffer("t", t)
+        self._harm_cache: dict[tuple, torch.Tensor] = {}
 
     def _midi_to_hz(self, midi: torch.Tensor) -> torch.Tensor:
         return 440.0 * torch.pow(2.0, (midi - 69.0) / 12.0)
@@ -94,7 +95,12 @@ class AdditiveOscillator(nn.Module):
         )
         n_h = max_h.max().item()
 
-        harm_amps = self._harmonic_amplitudes(n_h, pitch.device)
+        cache_key = (n_h, pitch.device)
+        if cache_key in self._harm_cache:
+            harm_amps = self._harm_cache[cache_key]
+        else:
+            harm_amps = self._harmonic_amplitudes(n_h, pitch.device)
+            self._harm_cache[cache_key] = harm_amps
         blended = torch.einsum("bw,wh->bh", waveform, harm_amps)
 
         harmonic_n = torch.arange(1, n_h + 1, device=pitch.device).float()

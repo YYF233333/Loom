@@ -74,17 +74,26 @@ class Delay(nn.Module):
             feedback: (batch,) feedback amount [0,1] -> [0, 0.9].
             mix: (batch,) dry/wet [0,1].
         """
-        # Short-circuit when fully bypassed to avoid polluting gradients.
         if mix.max().item() < 0.02:
             return signal + 0.0 * mix.unsqueeze(1)
 
         delay_samples = self._denorm_time(time)
         fb = feedback * self.MAX_FEEDBACK
         mix = mix.unsqueeze(1)
+        n = signal.shape[1]
 
-        wet = torch.zeros_like(signal)
-        for i in range(self.n_taps):
-            delayed = self._fractional_delay(signal, delay_samples * (i + 1))
-            wet = wet + (fb.unsqueeze(1) ** i) * delayed
+        indices = torch.arange(n, dtype=torch.float32, device=signal.device).unsqueeze(0)
+        tap_mul = torch.arange(1, self.n_taps + 1, dtype=torch.float32, device=signal.device)
+        read_pos = indices.unsqueeze(1) - delay_samples.unsqueeze(1).unsqueeze(1) * tap_mul.unsqueeze(0).unsqueeze(2)
+        x_norm = (read_pos / (n - 1)) * 2.0 - 1.0
+        y_norm = torch.zeros_like(x_norm)
+        grid = torch.stack([x_norm, y_norm], dim=-1)
+
+        signal_4d = signal.unsqueeze(1).unsqueeze(2)
+        delayed = F.grid_sample(signal_4d, grid, mode="bilinear", padding_mode="zeros", align_corners=True)
+        delayed = delayed.squeeze(1)
+
+        fb_weights = fb.unsqueeze(1).pow(tap_mul - 1).unsqueeze(-1)
+        wet = (fb_weights * delayed).sum(dim=1)
 
         return (1.0 - mix) * signal + mix * wet

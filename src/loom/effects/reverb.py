@@ -95,33 +95,12 @@ class Reverb(nn.Module):
         # Combined per-delay filter: gamma_i * lp(z)
         filt = gamma.unsqueeze(2) * lp.unsqueeze(1)  # (batch, 4, n_freq)
 
-        # Build per-frequency 4x4 system matrix: M = D - A @ diag(filt)
-        # where D[i,i] = z^{-m_i} (diagonal) and A is the feedback matrix
-        A = self.feedback_matrix.to(torch.cfloat)  # (4, 4)
-
-        eye = torch.eye(self.n_delays, device=device, dtype=torch.cfloat)
-        # D: (batch, 4, 4, n_freq) - diagonal matrices with z_neg_m on diag
-        D = eye.unsqueeze(0).unsqueeze(3) * z_neg_m.unsqueeze(2)
-        # A @ diag(filt): (batch, 4, 4, n_freq)
-        AG = A.unsqueeze(0).unsqueeze(3) * filt.unsqueeze(1)
-
-        system = D - AG  # (batch, 4, 4, n_freq)
-
-        # Add small regularization for numerical stability
-        reg = 1e-6 * eye.unsqueeze(0).unsqueeze(3)
-        system = system + reg
-
-        # Input/output vectors
-        B = torch.ones(self.n_delays, 1, device=device, dtype=torch.cfloat)
-        C = torch.ones(1, self.n_delays, device=device, dtype=torch.cfloat) / self.n_delays
-
-        # Solve: system @ x = B for each (batch, freq)
-        # Permute to (batch, n_freq, 4, 4) for batched solve
-        system_perm = system.permute(0, 3, 1, 2).contiguous()
-        B_expand = B.unsqueeze(0).unsqueeze(0).expand(batch, n_freq, -1, -1)
-
-        x = torch.linalg.solve(system_perm, B_expand)  # (batch, n_freq, 4, 1)
-        H = (C.unsqueeze(0).unsqueeze(0) @ x).squeeze(-1).squeeze(-1)  # (batch, n_freq)
+        # Sherman-Morrison closed-form solution.
+        # Householder A = I - (2/n)vvT makes the system diagonal + rank-1,
+        # so the per-frequency 4x4 solve reduces to element-wise ops.
+        d = 1.0 / (z_neg_m - filt + 1e-6)   # (batch, 4, n_freq)
+        S = (filt * d).sum(dim=1)             # (batch, n_freq)
+        H = d.sum(dim=1) / (self.n_delays + 2.0 * S)  # (batch, n_freq)
 
         # Apply transfer function and IFFT back
         wet = torch.fft.irfft(X * H, n=n_fft)
