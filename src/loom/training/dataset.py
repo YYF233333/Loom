@@ -100,6 +100,7 @@ def generate_dataset(
     # Pre-allocate memory-mapped files for zero RAM overhead
     if save_path:
         tmp_dir = Path(save_path).parent
+        tmp_dir.mkdir(parents=True, exist_ok=True)
     else:
         import tempfile
         tmp_dir = Path(tempfile.gettempdir())
@@ -120,6 +121,10 @@ def generate_dataset(
     n_batches = (n_samples + gen_batch_size - 1) // gen_batch_size
     offset = 0
 
+    mel_buf = torch.empty(gen_batch_size, n_mels, n_frames, dtype=torch.float32)
+    param_buf = torch.empty(gen_batch_size, n_param_vec, dtype=torch.float32)
+    audio_buf = torch.empty(gen_batch_size, n_audio, dtype=torch.float32)
+
     for i in range(n_batches):
         bs = min(gen_batch_size, n_samples - offset)
         params = random_params(bs, device=device)
@@ -130,30 +135,91 @@ def generate_dataset(
             mel_db = amp_to_db(mel)
             mel_norm = ((mel_db + 80.0) / 80.0).clamp(0.0, 1.0)
 
-        mel_mm[offset:offset + bs] = mel_norm.cpu().numpy()
-        param_mm[offset:offset + bs] = params_to_vector(params).cpu().numpy()
-        audio_mm[offset:offset + bs] = audio.cpu().numpy()
+            mel_buf[:bs].copy_(mel_norm)
+            audio_buf[:bs].copy_(audio)
+            param_buf[:bs].copy_(params_to_vector(params))
+
+        mel_mm[offset:offset + bs] = mel_buf[:bs].numpy()
+        param_mm[offset:offset + bs] = param_buf[:bs].numpy()
+        audio_mm[offset:offset + bs] = audio_buf[:bs].numpy()
         offset += bs
 
-        if (i + 1) % 100 == 0:
+        if (i + 1) % 500 == 0:
             print(f"  generated {offset}/{n_samples}")
 
-    # Convert to tensors
-    mels = torch.from_numpy(mel_mm[:n_samples].copy())
-    param_vecs = torch.from_numpy(param_mm[:n_samples].copy())
-    audio_all = torch.from_numpy(audio_mm[:n_samples].copy())
-
-    # Clean up temp files
+    # Flush memmap and rename as final dataset (zero RAM copy)
+    mel_mm.flush()
+    param_mm.flush()
+    audio_mm.flush()
     del mel_mm, param_mm, audio_mm
-    for f in ["_gen_mels.dat", "_gen_params.dat", "_gen_audio.dat"]:
-        (tmp_dir / f).unlink(missing_ok=True)
 
-    if save_path:
-        torch.save({"mels": mels, "params": param_vecs, "audio": audio_all}, save_path)
-        size_mb = (mels.nelement() + audio_all.nelement()) * mels.element_size() / 1e6
-        print(f"  saved to {save_path} ({size_mb:.0f} MB)")
+    save_dir = Path(save_path).parent if save_path else tmp_dir
+    for src, dst in [
+        ("_gen_mels.dat", "mels.dat"),
+        ("_gen_params.dat", "params.dat"),
+        ("_gen_audio.dat", "audio.dat"),
+    ]:
+        target = save_dir / dst
+        target.unlink(missing_ok=True)
+        (tmp_dir / src).rename(target)
 
+    meta = {
+        "n_samples": n_samples,
+        "mel_shape": (n_samples, n_mels, n_frames),
+        "param_shape": (n_samples, n_param_vec),
+        "audio_shape": (n_samples, n_audio),
+    }
+    torch.save(meta, save_dir / "dataset_meta.pt")
+    size_mb = (n_samples * n_mels * n_frames + n_samples * n_audio) * 4 / 1e6
+    print(f"  saved to {save_dir} ({size_mb:.0f} MB)")
+
+    # Return memmap-backed tensors (lazy, no RAM spike)
+    mels = torch.from_numpy(np.memmap(
+        save_dir / "mels.dat", dtype="float32", mode="r", shape=meta["mel_shape"],
+    ))
+    param_vecs = torch.from_numpy(np.memmap(
+        save_dir / "params.dat", dtype="float32", mode="r", shape=meta["param_shape"],
+    ))
+    audio_all = torch.from_numpy(np.memmap(
+        save_dir / "audio.dat", dtype="float32", mode="r", shape=meta["audio_shape"],
+    ))
     return mels, param_vecs, audio_all
+
+
+def load_dataset(data_dir: str) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
+    """Load dataset from memmap files. Returns memmap-backed tensors (lazy)."""
+    import numpy as np
+    from pathlib import Path
+
+    data_dir = Path(data_dir)
+    meta_path = data_dir / "dataset_meta.pt"
+
+    # New memmap format
+    if meta_path.exists():
+        meta = torch.load(meta_path, weights_only=True)
+        mels = torch.from_numpy(np.memmap(
+            data_dir / "mels.dat", dtype="float32", mode="r", shape=tuple(meta["mel_shape"]),
+        ))
+        params = torch.from_numpy(np.memmap(
+            data_dir / "params.dat", dtype="float32", mode="r", shape=tuple(meta["param_shape"]),
+        ))
+        audio = None
+        audio_path = data_dir / "audio.dat"
+        if audio_path.exists():
+            audio = torch.from_numpy(np.memmap(
+                audio_path, dtype="float32", mode="r", shape=tuple(meta["audio_shape"]),
+            ))
+        print(f"  loaded {meta['n_samples']} samples (memmap)")
+        return mels, params, audio
+
+    # Legacy .pt format fallback
+    pt_path = data_dir / "synth_dataset.pt"
+    if pt_path.exists():
+        data = torch.load(pt_path, weights_only=True)
+        print(f"  loaded {len(data['mels'])} samples (legacy .pt)")
+        return data["mels"], data["params"], data.get("audio")
+
+    raise FileNotFoundError(f"No dataset found in {data_dir}")
 
 
 class SynthDataset(Dataset):
