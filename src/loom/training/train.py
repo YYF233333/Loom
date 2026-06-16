@@ -95,7 +95,7 @@ def train_epoch(model, train_mels, train_params, bs, optimizer, scaler, use_amp,
     model.train()
     n_train = len(train_mels)
     perm = torch.randperm(n_train, device=train_mels.device)
-    loss_acc = 0.0
+    p_loss_acc, s_loss_acc = 0.0, 0.0
     n_batches = 0
 
     for bi in range(0, n_train, bs):
@@ -182,7 +182,8 @@ def train_epoch(model, train_mels, train_params, bs, optimizer, scaler, use_amp,
 
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
-            loss_acc += loss_p.item() + alpha * l_spectral_total.item()
+            p_loss_acc += loss_p.item()
+            s_loss_acc += l_spectral_total.item()
         else:
             optimizer.zero_grad()
             scaler.scale(loss_p).backward()
@@ -190,23 +191,34 @@ def train_epoch(model, train_mels, train_params, bs, optimizer, scaler, use_amp,
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             scaler.step(optimizer)
             scaler.update()
-            loss_acc += loss_p.item()
+            p_loss_acc += loss_p.item()
         n_batches += 1
 
-    return loss_acc / n_batches
+    return p_loss_acc / n_batches, s_loss_acc / n_batches
 
 
-def validate(model, val_mels, val_params, bs):
-    """Run validation. Returns average loss."""
+def validate(model, val_mels, val_params, bs, synth=None):
+    """Run validation. Returns (param_loss, spectral_loss) averages."""
     model.eval()
-    loss_acc = 0.0
+    p_acc, s_acc = 0.0, 0.0
     n_batches = 0
     with torch.no_grad():
         for vi in range(0, len(val_mels), bs):
             pred = model(val_mels[vi:vi + bs])
-            loss_acc += weighted_param_loss(pred, val_params[vi:vi + bs]).item()
+            target = val_params[vi:vi + bs]
+            p_acc += weighted_param_loss(pred, target).item()
+
+            if synth is not None:
+                pred_p = vector_to_params(pred)
+                pred_p.pop("fx_routing", None)
+                pred_audio, pred_inter = synth(pred_p, return_intermediates=True)
+                target_p = vector_to_params(target)
+                target_p.pop("fx_routing", None)
+                target_audio, target_inter = synth(target_p, return_intermediates=True)
+                s_acc += (multi_resolution_stft_loss(pred_audio, target_audio)
+                          + signal_chain_loss(pred_inter, target_inter)).item()
             n_batches += 1
-    return loss_acc / n_batches
+    return p_acc / n_batches, s_acc / n_batches
 
 
 STAGE_NAMES = {0: "osc only", 1: "osc+filter", 2: "osc+filter+env", 3: "mild FX", 99: "full"}
@@ -346,17 +358,18 @@ def train(args):
                 if epoch >= args.epochs:
                     break
 
-                train_loss = train_epoch(
+                train_p, train_s = train_epoch(
                     model, train_mels, train_params, args.batch_size,
                     optimizer, scaler, use_amp, synth_for_loss, None, args, ema_state,
                 )
-                val_loss = validate(model, val_mels, val_params, args.batch_size)
+                val_p, val_s = validate(model, val_mels, val_params, args.batch_size,
+                                        synth=synth_for_loss)
                 scheduler.step()
                 epoch += 1
 
                 marker = ""
-                if val_loss < best_val:
-                    best_val = val_loss
+                if val_p < best_val:
+                    best_val = val_p
                     torch.save(model.state_dict(), data_dir / "best_encoder.pt")
                     patience_counter = 0
                     marker = " *"
@@ -366,9 +379,10 @@ def train(args):
                 if epoch % args.log_every == 0 or marker:
                     elapsed = time.perf_counter() - t0
                     stage_str = f" S{cur_stage}" if args.curriculum or args.stage != 99 else ""
+                    s_str = f" s={train_s:.4f}/{val_s:.4f}" if synth_for_loss else ""
                     print(
                         f"Epoch {epoch:3d}/{args.epochs} (pool {pool_round}){stage_str}"
-                        f" | train {train_loss:.6f} | val {val_loss:.6f}"
+                        f" | p={train_p:.4f}/{val_p:.4f}{s_str}"
                         f" | lr {optimizer.param_groups[0]['lr']:.2e}"
                         f" | {elapsed:.0f}s{marker}"
                     )
@@ -431,16 +445,17 @@ def train(args):
         print(f"Train: {n_train}, Val: {n_val} (data on GPU: {vram_gb:.1f} GB)")
 
         for epoch in range(args.epochs):
-            train_loss = train_epoch(
+            train_p, train_s = train_epoch(
                 model, train_mels, train_params, args.batch_size,
                 optimizer, scaler, use_amp, synth_for_loss, train_audio, args, ema_state,
             )
-            val_loss = validate(model, val_mels, val_params, args.batch_size)
+            val_p, val_s = validate(model, val_mels, val_params, args.batch_size,
+                                     synth=synth_for_loss)
             scheduler.step()
 
             marker = ""
-            if val_loss < best_val:
-                best_val = val_loss
+            if val_p < best_val:
+                best_val = val_p
                 torch.save(model.state_dict(), data_dir / "best_encoder.pt")
                 patience_counter = 0
                 marker = " *"
@@ -449,15 +464,11 @@ def train(args):
 
             if (epoch + 1) % args.log_every == 0 or marker:
                 elapsed = time.perf_counter() - t0
-                alpha_str = (
-                    f" | α {args.spectral_ratio * ema_state['gn_param'] / (ema_state['gn_spectral'] + 1e-8):.2e}"
-                    if synth_for_loss is not None else ""
-                )
+                s_str = f" s={train_s:.4f}/{val_s:.4f}" if synth_for_loss else ""
                 print(
                     f"Epoch {epoch + 1:3d}/{args.epochs}"
-                    f" | train {train_loss:.6f} | val {val_loss:.6f}"
+                    f" | p={train_p:.4f}/{val_p:.4f}{s_str}"
                     f" | lr {optimizer.param_groups[0]['lr']:.2e}"
-                    f"{alpha_str}"
                     f" | {elapsed:.0f}s{marker}"
                 )
 
