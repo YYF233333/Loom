@@ -6,10 +6,13 @@ Usage:
 """
 
 import argparse
+import os
 import sys
 import time
 from pathlib import Path
 
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "1")
 sys.stdout.reconfigure(line_buffering=True)
 
 import torch
