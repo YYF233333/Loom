@@ -87,11 +87,11 @@ N_QUERIES = 10
 # PARAM_GROUPS: list of (name, cont_indices, cat_specs, n_routing_logits, loss_weight)
 # cat_specs: list of (key_name, n_classes) — order must match CATEGORICAL_KEYS
 PARAM_GROUPS = [
-    ("osc",    OSC_CONT,    OSC_CAT,    0,  1.5),
-    ("filter", FILTER_CONT, FILTER_CAT, 0,  1.2),
-    ("env",    ENV_CONT,    [],         0,  1.0),
-    ("fx",     FX_CONT,     [],         0,  0.8),
-    ("global", GLOBAL_CONT, GLOBAL_CAT, 0,  0.6),
+    ("osc",    OSC_CONT,    OSC_CAT,    0,  1.0),
+    ("filter", FILTER_CONT, FILTER_CAT, 0,  2.0),
+    ("env",    ENV_CONT,    [],         0,  3.0),
+    ("fx",     FX_CONT,     [],         0,  1.0),
+    ("global", GLOBAL_CONT, GLOBAL_CAT, 0,  1.0),
     ("route",  [],          [],         N_ROUTING, 0.5),
 ]
 

@@ -1,6 +1,6 @@
 import torch
 
-from loom.training.dataset import N_CONTINUOUS, CATEGORICAL_KEYS
+from loom.training.dataset import N_CONTINUOUS, N_ROUTING, CATEGORICAL_KEYS
 
 
 def param_loss(pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
@@ -15,6 +15,39 @@ def param_loss(pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
         idx += n
 
     cat_ce = torch.stack(cat_parts).mean()
+    return continuous_mse + 0.5 * cat_ce
+
+
+_GROUP_WEIGHTS = None
+
+
+def _get_group_weights(device):
+    global _GROUP_WEIGHTS
+    if _GROUP_WEIGHTS is not None and _GROUP_WEIGHTS.device == device:
+        return _GROUP_WEIGHTS
+    from loom.training.encoder_v2 import PARAM_GROUPS
+    w = torch.ones(N_CONTINUOUS, device=device)
+    for name, cont_indices, cat_specs, n_route, loss_weight in PARAM_GROUPS:
+        for idx in cont_indices:
+            w[idx] = loss_weight
+    _GROUP_WEIGHTS = w
+    return w
+
+
+def weighted_param_loss(pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+    weights = _get_group_weights(pred.device)
+    diff_sq = (pred[:, :N_CONTINUOUS] - target[:, :N_CONTINUOUS]).pow(2)
+    continuous_mse = (diff_sq * weights.unsqueeze(0)).mean()
+
+    cat_parts = []
+    idx = N_CONTINUOUS
+    for _, n in CATEGORICAL_KEYS:
+        pred_logp = pred[:, idx:idx + n].clamp(1e-7, 1.0).log()
+        target_p = target[:, idx:idx + n]
+        cat_parts.append((-target_p * pred_logp).sum(dim=-1).mean())
+        idx += n
+
+    cat_ce = torch.stack(cat_parts).mean() if cat_parts else torch.tensor(0.0, device=pred.device)
     return continuous_mse + 0.5 * cat_ce
 
 

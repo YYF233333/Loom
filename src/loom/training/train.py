@@ -26,9 +26,40 @@ from loom.render import random_params
 from loom.training.dataset import (
     generate_dataset, load_dataset, vector_to_params, params_to_vector,
 )
-from loom.training.encoder import ParamEncoder
-from loom.training.losses import param_loss, multi_resolution_stft_loss, signal_chain_loss
+from loom.training.losses import weighted_param_loss, multi_resolution_stft_loss, signal_chain_loss
 from loom.synth import SubtractiveSynth
+
+
+def _build_model(args):
+    """Construct the encoder model based on --arch flag."""
+    arch = args.arch
+    if arch == "transformer":
+        from loom.training.encoder_v2 import TransformerParamEncoder
+        model = TransformerParamEncoder(
+            d_model=args.d_model, n_layers=args.n_layers,
+        )
+    elif arch == "hybrid":
+        from loom.training.encoder_v2 import HybridParamEncoder
+        model = HybridParamEncoder(
+            d_model=args.d_model, d_state=args.d_state,
+        )
+    elif arch == "v1":
+        from loom.training.encoder import ParamEncoder
+        model = ParamEncoder(
+            d_model=args.d_model, d_state=args.d_state, n_layers=args.n_layers,
+        )
+    else:
+        raise ValueError(f"Unknown arch: {arch!r}")
+    return model
+
+
+def _build_optimizer(model, args):
+    """Build AdamW optimizer, using per-group lr when the model supports it."""
+    if hasattr(model, "param_groups_for_optimizer"):
+        param_groups = model.param_groups_for_optimizer(args.lr)
+    else:
+        param_groups = model.parameters()
+    return torch.optim.AdamW(param_groups, lr=args.lr, weight_decay=0.01)
 
 
 def generate_pool(n_samples, synth, mel_transform, amp_to_db, gen_batch_size, device, stage=99):
@@ -76,31 +107,14 @@ def train_epoch(model, train_mels, train_params, bs, optimizer, scaler, use_amp,
             pred = model(mel)
 
         pred = pred.float()
-        loss = param_loss(pred, target)
+        loss_p = weighted_param_loss(pred, target)
 
         if synth is not None:
             cached_audio = train_audio[idx].to(mel.device) if train_audio is not None else None
-            pred_p = vector_to_params(pred)
-            pred_p.pop("fx_routing", None)
-            pred_result = synth(pred_p, return_intermediates=True)
-            pred_audio, pred_inter = pred_result
 
-            with torch.no_grad():
-                target_p = vector_to_params(target)
-                target_p.pop("fx_routing", None)
-                target_result = synth(target_p, return_intermediates=True)
-                target_audio_synth, target_inter = target_result
-            if cached_audio is not None:
-                target_audio = cached_audio
-            else:
-                target_audio = target_audio_synth
-
-            l_spectral = multi_resolution_stft_loss(pred_audio, target_audio)
-            l_chain = signal_chain_loss(pred_inter, target_inter)
-            l_spectral = l_spectral + l_chain
-
+            # --- Step 1: backward param loss, save gradients ---
             optimizer.zero_grad()
-            loss.backward(retain_graph=True)
+            loss_p.backward(retain_graph=True)
             gn_p = torch.stack([
                 p.grad.norm() for p in model.parameters() if p.grad is not None
             ]).norm().item()
@@ -109,12 +123,47 @@ def train_epoch(model, train_mels, train_params, bs, optimizer, scaler, use_amp,
                 if p.grad is not None
             ]
 
+            # --- Step 2: spectral loss with gradient accumulation over sub-batches ---
             model.zero_grad()
-            l_spectral.backward()
+            spectral_batch_size = args.spectral_batch_size
+            n_sub = max(1, (len(idx) + spectral_batch_size - 1) // spectral_batch_size)
+            l_spectral_total = None
+
+            for sub_start in range(0, len(idx), spectral_batch_size):
+                sub_slice = slice(sub_start, sub_start + spectral_batch_size)
+                pred_sub = pred[sub_slice]
+
+                pred_p_sub = vector_to_params(pred_sub)
+                pred_p_sub.pop("fx_routing", None)
+                pred_result_sub = synth(pred_p_sub, return_intermediates=True)
+                pred_audio_sub, pred_inter_sub = pred_result_sub
+
+                with torch.no_grad():
+                    target_sub = target[sub_slice]
+                    target_p_sub = vector_to_params(target_sub)
+                    target_p_sub.pop("fx_routing", None)
+                    target_result_sub = synth(target_p_sub, return_intermediates=True)
+                    if cached_audio is not None:
+                        target_audio_sub = cached_audio[sub_slice]
+                    else:
+                        target_audio_sub = target_result_sub[0]
+                    target_inter_sub = target_result_sub[1]
+
+                l_spec_sub = multi_resolution_stft_loss(pred_audio_sub, target_audio_sub)
+                l_chain_sub = signal_chain_loss(pred_inter_sub, target_inter_sub)
+                l_sub = (l_spec_sub + l_chain_sub) / n_sub
+                l_sub.backward()
+
+                if l_spectral_total is None:
+                    l_spectral_total = l_sub.detach()
+                else:
+                    l_spectral_total = l_spectral_total + l_sub.detach()
+
             gn_s = torch.stack([
                 p.grad.norm() for p in model.parameters() if p.grad is not None
             ]).norm().item()
 
+            # --- Step 3: GradNorm EMA balancing ---
             if ema_state["gn_param"] == 0.0:
                 ema_state["gn_param"] = gn_p
                 ema_state["gn_spectral"] = gn_s
@@ -131,15 +180,15 @@ def train_epoch(model, train_mels, train_params, bs, optimizer, scaler, use_amp,
 
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
-            loss_acc += loss.item() + alpha * l_spectral.item()
+            loss_acc += loss_p.item() + alpha * l_spectral_total.item()
         else:
             optimizer.zero_grad()
-            scaler.scale(loss).backward()
+            scaler.scale(loss_p).backward()
             scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             scaler.step(optimizer)
             scaler.update()
-            loss_acc += loss.item()
+            loss_acc += loss_p.item()
         n_batches += 1
 
     return loss_acc / n_batches
@@ -153,7 +202,7 @@ def validate(model, val_mels, val_params, bs):
     with torch.no_grad():
         for vi in range(0, len(val_mels), bs):
             pred = model(val_mels[vi:vi + bs])
-            loss_acc += param_loss(pred, val_params[vi:vi + bs]).item()
+            loss_acc += weighted_param_loss(pred, val_params[vi:vi + bs]).item()
             n_batches += 1
     return loss_acc / n_batches
 
@@ -178,14 +227,12 @@ def train(args):
     data_dir.mkdir(parents=True, exist_ok=True)
 
     # --- model ---
-    model = ParamEncoder(
-        d_model=args.d_model, d_state=args.d_state, n_layers=args.n_layers,
-    ).to(DEVICE)
+    model = _build_model(args).to(DEVICE)
     if args.compile:
         model = torch.compile(model)
         print("torch.compile enabled")
     n_model_params = sum(p.numel() for p in model.parameters())
-    print(f"Encoder params: {n_model_params:,}")
+    print(f"Encoder params: {n_model_params:,} (arch={args.arch})")
 
     if args.resume:
         ckpt_path = Path(args.resume)
@@ -195,7 +242,7 @@ def train(args):
         model.load_state_dict(state)
         print(f"Resumed from {ckpt_path}")
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=1e-5)
+    optimizer = _build_optimizer(model, args)
     sched_len = args.stage_epochs if args.curriculum and args.stage_epochs > 0 else args.epochs
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer, T_max=sched_len, eta_min=args.lr_min,
@@ -206,7 +253,7 @@ def train(args):
         n_audio = int(SAMPLE_RATE * args.audio_duration)
         synth_for_loss = SubtractiveSynth(SAMPLE_RATE, n_audio).to(DEVICE)
         synth_for_loss.eval()
-        print(f"Spectral loss enabled (ratio={args.spectral_ratio})")
+        print(f"Spectral loss enabled (ratio={args.spectral_ratio}, sub-batch={args.spectral_batch_size})")
 
     use_amp = args.amp and torch.cuda.is_available()
     scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
@@ -249,8 +296,19 @@ def train(args):
                 remaining,
             )
             print(f"\n>>> CURRICULUM STAGE {cur}: {STAGE_NAMES.get(cur, '?')} (lr {args.lr:.0e}→{args.lr_min:.0e}, {stage_len} ep) <<<")
-            for pg in optimizer.param_groups:
-                pg["lr"] = args.lr
+            # Respect per-group lr multipliers when resetting
+            if hasattr(model, "param_groups_for_optimizer"):
+                reference_groups = model.param_groups_for_optimizer(args.lr)
+                ref_by_name = {g["name"]: g["lr"] for g in reference_groups}
+                for pg in optimizer.param_groups:
+                    name = pg.get("name")
+                    if name is not None and name in ref_by_name:
+                        pg["lr"] = ref_by_name[name]
+                    else:
+                        pg["lr"] = args.lr
+            else:
+                for pg in optimizer.param_groups:
+                    pg["lr"] = args.lr
             sched = torch.optim.lr_scheduler.CosineAnnealingLR(
                 optimizer, T_max=stage_len, eta_min=args.lr_min,
             )
@@ -424,15 +482,17 @@ if __name__ == "__main__":
     parser.add_argument("--pool-epochs", type=int, default=5,
                         help="Epochs to train per pool before regeneration")
     # Training
-    parser.add_argument("--batch-size", type=int, default=64)
+    parser.add_argument("--batch-size", type=int, default=256)
     parser.add_argument("--epochs", type=int, default=100)
-    parser.add_argument("--lr", type=float, default=1e-3)
-    parser.add_argument("--lr-min", type=float, default=1e-4,
-                        help="Minimum lr for cosine decay (default 1e-4, i.e. 10x decay)")
+    parser.add_argument("--lr", type=float, default=3e-4)
+    parser.add_argument("--lr-min", type=float, default=3e-5,
+                        help="Minimum lr for cosine decay (default 3e-5, i.e. 10x decay)")
     parser.add_argument("--patience", type=int, default=0)
     parser.add_argument("--log-every", type=int, default=10)
     parser.add_argument("--spectral", action="store_true", help="Enable spectral loss")
     parser.add_argument("--spectral-ratio", type=float, default=1.0)
+    parser.add_argument("--spectral-batch-size", type=int, default=32,
+                        help="Sub-batch size for spectral loss gradient accumulation (default 32)")
     parser.add_argument("--resume", type=str, default=None)
     parser.add_argument("--amp", action="store_true", help="Enable mixed precision")
     parser.add_argument("--compile", action="store_true", help="torch.compile the model")
@@ -446,7 +506,10 @@ if __name__ == "__main__":
     parser.add_argument("--stage-patience", type=int, default=20,
                         help="Advance to next stage after N epochs without improvement")
     # Model
-    parser.add_argument("--d-model", type=int, default=160)
+    parser.add_argument("--arch", type=str, default="transformer",
+                        choices=["transformer", "hybrid", "v1"],
+                        help="Encoder architecture: transformer, hybrid (Mamba+Attn), or v1 (legacy)")
+    parser.add_argument("--d-model", type=int, default=256)
     parser.add_argument("--d-state", type=int, default=64)
     parser.add_argument("--n-layers", type=int, default=6)
     args = parser.parse_args()
