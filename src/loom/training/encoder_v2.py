@@ -296,21 +296,21 @@ class GroupedParamHeads(nn.Module):
         # --- continuous outputs (assembled in CONTINUOUS_KEYS order) ---
         # We need to scatter each group's continuous outputs into a (B, N_CONTINUOUS) tensor
         B = queries.shape[0]
-        cont = torch.zeros(B, N_CONTINUOUS, device=queries.device, dtype=queries.dtype)
+        cont = torch.zeros(B, N_CONTINUOUS, device=queries.device, dtype=torch.float32)
 
-        cont[:, OSC_CONT]    = torch.sigmoid(self.osc_head(q_osc))
-        cont[:, FILTER_CONT] = torch.sigmoid(self.filter_head(q_filter))
-        cont[:, ENV_CONT]    = torch.sigmoid(self.env_head(q_env))
-        cont[:, FX_CONT]     = torch.sigmoid(self.fx_head(q_fx))
-        cont[:, GLOBAL_CONT] = torch.sigmoid(self.global_head(q_global))
+        cont[:, OSC_CONT]    = torch.sigmoid(self.osc_head(q_osc)).float()
+        cont[:, FILTER_CONT] = torch.sigmoid(self.filter_head(q_filter)).float()
+        cont[:, ENV_CONT]    = torch.sigmoid(self.env_head(q_env)).float()
+        cont[:, FX_CONT]     = torch.sigmoid(self.fx_head(q_fx)).float()
+        cont[:, GLOBAL_CONT] = torch.sigmoid(self.global_head(q_global)).float()
 
         # --- categorical outputs (in CATEGORICAL_KEYS order) ---
         # CATEGORICAL_KEYS = [osc_waveform(4), osc_type(3), filter_type(3), lfo_waveform(4), lfo_target(4)]
-        cat_osc_waveform = torch.softmax(self.osc_waveform_head(q_osc), dim=-1)    # (B, 4)
-        cat_osc_type     = torch.softmax(self.osc_type_head(q_osc), dim=-1)        # (B, 3)
-        cat_filter_type  = torch.softmax(self.filter_type_head(q_filter), dim=-1)  # (B, 3)
-        cat_lfo_waveform = torch.softmax(self.lfo_waveform_head(q_global), dim=-1) # (B, 4)
-        cat_lfo_target   = torch.softmax(self.lfo_target_head(q_global), dim=-1)   # (B, 4)
+        cat_osc_waveform = torch.softmax(self.osc_waveform_head(q_osc).float(), dim=-1)
+        cat_osc_type     = torch.softmax(self.osc_type_head(q_osc).float(), dim=-1)
+        cat_filter_type  = torch.softmax(self.filter_type_head(q_filter).float(), dim=-1)
+        cat_lfo_waveform = torch.softmax(self.lfo_waveform_head(q_global).float(), dim=-1)
+        cat_lfo_target   = torch.softmax(self.lfo_target_head(q_global).float(), dim=-1)
 
         cats = torch.cat(
             [cat_osc_waveform, cat_osc_type, cat_filter_type, cat_lfo_waveform, cat_lfo_target],
@@ -319,7 +319,7 @@ class GroupedParamHeads(nn.Module):
 
         # --- routing logits ---
         route_in = q_route.reshape(B, -1)           # (B, 5*d_model)
-        routing  = self.routing_head(route_in)       # (B, 36)
+        routing  = self.routing_head(route_in).float()  # (B, 36)
 
         return torch.cat([cont, cats, routing], dim=-1)  # (B, N_PARAMS)
 
