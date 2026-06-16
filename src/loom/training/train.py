@@ -197,7 +197,9 @@ def train(args):
 
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=1e-5)
     sched_len = args.stage_epochs if args.curriculum and args.stage_epochs > 0 else args.epochs
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=sched_len)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, T_max=sched_len, eta_min=args.lr_min,
+    )
 
     synth_for_loss = None
     if args.spectral:
@@ -246,10 +248,12 @@ def train(args):
                 args.stage_epochs if args.stage_epochs > 0 else max(1, args.epochs // 4),
                 remaining,
             )
-            print(f"\n>>> CURRICULUM STAGE {cur}: {STAGE_NAMES.get(cur, '?')} (lr reset → {args.lr:.0e}, {stage_len} ep schedule) <<<")
+            print(f"\n>>> CURRICULUM STAGE {cur}: {STAGE_NAMES.get(cur, '?')} (lr {args.lr:.0e}→{args.lr_min:.0e}, {stage_len} ep) <<<")
             for pg in optimizer.param_groups:
                 pg["lr"] = args.lr
-            sched = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=stage_len)
+            sched = torch.optim.lr_scheduler.CosineAnnealingLR(
+                optimizer, T_max=stage_len, eta_min=args.lr_min,
+            )
             new_val_mels, new_val_params = generate_pool(
                 n_val, synth_gen, mel_transform, amp_to_db,
                 args.gen_batch_size, DEVICE, stage=cur,
@@ -423,6 +427,8 @@ if __name__ == "__main__":
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--lr", type=float, default=1e-3)
+    parser.add_argument("--lr-min", type=float, default=1e-4,
+                        help="Minimum lr for cosine decay (default 1e-4, i.e. 10x decay)")
     parser.add_argument("--patience", type=int, default=0)
     parser.add_argument("--log-every", type=int, default=10)
     parser.add_argument("--spectral", action="store_true", help="Enable spectral loss")
