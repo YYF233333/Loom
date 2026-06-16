@@ -24,7 +24,7 @@ def random_params(batch: int, device: torch.device = DEVICE) -> dict[str, torch.
         "lfo_rate": _rand((batch,)),
         "lfo_depth": _rand((batch,)),
         "lfo_waveform": _one_hot_rand(batch, 4),
-        "lfo_target": torch.zeros(batch, 4, device=device),
+        "lfo_target": _one_hot_rand(batch, 4),
         "lfo_phase": _rand((batch,)),
         "amp_attack": _rand((batch,)),
         "amp_decay": _rand((batch,)),
