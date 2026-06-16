@@ -49,25 +49,55 @@ class SubtractiveSynth(nn.Module):
         has_pitch_mod = (params["lfo_depth"].abs() > 1e-4).any() and (lfo_target[:, 1].abs() > 1e-4).any()
         fm_arg = freq_mod if has_pitch_mod else None
 
-        additive_out = self.oscillator(
-            params["osc_pitch"], params["osc_waveform"], params["osc_detune"],
-            freq_mod=fm_arg,
-        )
-        wavetable_out = self.wavetable_osc(
-            params["osc_pitch"], params["osc_detune"], params["wt_position"],
-            freq_mod=fm_arg,
-        )
-        fm_out = self.fm_osc(
-            params["osc_pitch"], params["osc_detune"],
-            params["fm_carrier_ratio"], params["fm_mod_ratio"], params["fm_mod_index"],
-            freq_mod=fm_arg,
-        )
         osc_type = params["osc_type"]
-        audio = (
-            osc_type[:, 0:1] * additive_out
-            + osc_type[:, 1:2] * wavetable_out
-            + osc_type[:, 2:3] * fm_out
-        )
+
+        if torch.is_grad_enabled():
+            additive_out = self.oscillator(
+                params["osc_pitch"], params["osc_waveform"], params["osc_detune"],
+                freq_mod=fm_arg,
+            )
+            wavetable_out = self.wavetable_osc(
+                params["osc_pitch"], params["osc_detune"], params["wt_position"],
+                freq_mod=fm_arg,
+            )
+            fm_out = self.fm_osc(
+                params["osc_pitch"], params["osc_detune"],
+                params["fm_carrier_ratio"], params["fm_mod_ratio"], params["fm_mod_index"],
+                freq_mod=fm_arg,
+            )
+            audio = (
+                osc_type[:, 0:1] * additive_out
+                + osc_type[:, 1:2] * wavetable_out
+                + osc_type[:, 2:3] * fm_out
+            )
+        else:
+            batch = osc_type.shape[0]
+            audio = torch.zeros(batch, n_samples, device=osc_type.device)
+            mask_add = osc_type[:, 0] > 0.5
+            mask_wt = osc_type[:, 1] > 0.5
+            mask_fm = osc_type[:, 2] > 0.5
+            if mask_add.any():
+                idx = mask_add.nonzero(as_tuple=True)[0]
+                audio[idx] = self.oscillator(
+                    params["osc_pitch"][idx], params["osc_waveform"][idx],
+                    params["osc_detune"][idx],
+                    freq_mod=fm_arg[idx] if fm_arg is not None else None,
+                )
+            if mask_wt.any():
+                idx = mask_wt.nonzero(as_tuple=True)[0]
+                audio[idx] = self.wavetable_osc(
+                    params["osc_pitch"][idx], params["osc_detune"][idx],
+                    params["wt_position"][idx],
+                    freq_mod=fm_arg[idx] if fm_arg is not None else None,
+                )
+            if mask_fm.any():
+                idx = mask_fm.nonzero(as_tuple=True)[0]
+                audio[idx] = self.fm_osc(
+                    params["osc_pitch"][idx], params["osc_detune"][idx],
+                    params["fm_carrier_ratio"][idx], params["fm_mod_ratio"][idx],
+                    params["fm_mod_index"][idx],
+                    freq_mod=fm_arg[idx] if fm_arg is not None else None,
+                )
 
         # Filter: time-varying cutoff (envelope + LFO)
         filt_env = self.filter_envelope(

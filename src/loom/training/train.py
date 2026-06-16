@@ -38,7 +38,7 @@ def train(args):
         mels, param_vecs, target_audio_all = generate_dataset(
             args.n_samples,
             audio_duration=args.audio_duration,
-            gen_batch_size=8,
+            gen_batch_size=args.gen_batch_size,
             save_path=str(data_dir / "dataset"),
             device=DEVICE,
         )
@@ -248,6 +248,7 @@ if __name__ == "__main__":
                         help="Path to checkpoint to resume from (or filename in data-dir)")
     parser.add_argument("--amp", action="store_true", help="Enable mixed precision (fp16)")
     parser.add_argument("--compile", action="store_true", help="torch.compile the model")
+    parser.add_argument("--gen-batch-size", type=int, default=64)
     parser.add_argument("--d-model", type=int, default=160)
     parser.add_argument("--d-state", type=int, default=64)
     parser.add_argument("--n-layers", type=int, default=6)
