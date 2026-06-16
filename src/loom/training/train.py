@@ -196,7 +196,8 @@ def train(args):
         print(f"Resumed from {ckpt_path}")
 
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=1e-5)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
+    sched_len = args.stage_epochs if args.curriculum and args.stage_epochs > 0 else args.epochs
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=sched_len)
 
     synth_for_loss = None
     if args.spectral:
@@ -238,18 +239,31 @@ def train(args):
         else:
             print(f"Pool mode: {args.pool_size} samples/pool, {args.pool_epochs} epochs/pool, stage={cur_stage}")
 
+        def advance_stage(cur, epoch):
+            """Advance curriculum stage: reset lr, scheduler, val set."""
+            remaining = args.epochs - epoch
+            stage_len = min(
+                args.stage_epochs if args.stage_epochs > 0 else max(1, args.epochs // 4),
+                remaining,
+            )
+            print(f"\n>>> CURRICULUM STAGE {cur}: {STAGE_NAMES.get(cur, '?')} (lr reset → {args.lr:.0e}, {stage_len} ep schedule) <<<")
+            for pg in optimizer.param_groups:
+                pg["lr"] = args.lr
+            sched = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=stage_len)
+            new_val_mels, new_val_params = generate_pool(
+                n_val, synth_gen, mel_transform, amp_to_db,
+                args.gen_batch_size, DEVICE, stage=cur,
+            )
+            return sched, new_val_mels, new_val_params
+
         epoch = 0
         pool_round = 0
         while epoch < args.epochs:
             new_stage = get_curriculum_stage(epoch, args)
             if new_stage != cur_stage:
                 cur_stage = new_stage
-                print(f"\n>>> CURRICULUM STAGE {cur_stage}: {STAGE_NAMES.get(cur_stage, '?')} <<<")
-                # Regenerate validation set for new stage
-                val_mels, val_params = generate_pool(
-                    n_val, synth_gen, mel_transform, amp_to_db,
-                    args.gen_batch_size, DEVICE, stage=cur_stage,
-                )
+                scheduler, val_mels, val_params = advance_stage(cur_stage, epoch)
+                ema_state = {"gn_param": 0.0, "gn_spectral": 0.0}
                 best_val = float("inf")
                 patience_counter = 0
 
@@ -263,6 +277,7 @@ def train(args):
             vram_gb = torch.cuda.memory_allocated() / 1e9
             print(f"  pool {pool_round}: generated {args.pool_size} in {gen_time:.1f}s ({vram_gb:.1f} GB)")
 
+            advance_now = False
             for pe in range(args.pool_epochs):
                 if epoch >= args.epochs:
                     break
@@ -294,14 +309,29 @@ def train(args):
                         f" | {elapsed:.0f}s{marker}"
                     )
 
+                # Curriculum: early advance when stage plateaus
+                if args.curriculum and args.stage_patience and patience_counter >= args.stage_patience and cur_stage < 3:
+                    print(f"  Stage {cur_stage} converged at epoch {epoch} (patience={args.stage_patience}), advancing...")
+                    cur_stage += 1
+                    scheduler, val_mels, val_params = advance_stage(cur_stage, epoch)
+                    ema_state = {"gn_param": 0.0, "gn_spectral": 0.0}
+                    best_val = float("inf")
+                    patience_counter = 0
+                    advance_now = True
+                    break
+
+                # Global early stopping
                 if args.patience and patience_counter >= args.patience:
                     print(f"Early stopping at epoch {epoch}")
+                    advance_now = False
                     break
 
             del train_mels, train_params
             torch.cuda.empty_cache()
 
-            if args.patience and patience_counter >= args.patience:
+            if advance_now:
+                continue
+            if args.patience and patience_counter >= args.patience and not args.curriculum:
                 break
 
     # ── Fixed dataset mode ──────────────────────────────────────
@@ -407,6 +437,8 @@ if __name__ == "__main__":
                         help="Fixed curriculum stage (0-3, 99=full). Ignored with --curriculum")
     parser.add_argument("--stage-epochs", type=int, default=0,
                         help="Epochs per curriculum stage (0=auto: epochs/4)")
+    parser.add_argument("--stage-patience", type=int, default=20,
+                        help="Advance to next stage after N epochs without improvement")
     # Model
     parser.add_argument("--d-model", type=int, default=160)
     parser.add_argument("--d-state", type=int, default=64)
