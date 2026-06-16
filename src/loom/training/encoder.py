@@ -5,14 +5,18 @@ import torch.nn as nn
 
 from loom.training.dataset import N_CONTINUOUS, N_PARAMS, N_ROUTING, CATEGORICAL_KEYS
 
+try:
+    from mamba_ssm import Mamba
+
+    HAS_MAMBA = True
+except ImportError:
+    HAS_MAMBA = False
+
+
+# ── S4D fallback (pure PyTorch, any GPU) ─────────────────────────────
+
 
 class S4DKernel(nn.Module):
-    """Diagonal State Space Model kernel (S4D).
-
-    Computes SSM convolution kernel via Vandermonde + FFT.
-    HiPPO-inspired initialization for long-range memory.
-    """
-
     def __init__(self, d_model, d_state=64):
         super().__init__()
         self.log_A_real = nn.Parameter(
@@ -29,7 +33,6 @@ class S4DKernel(nn.Module):
         dt = torch.exp(self.log_dt).unsqueeze(-1)
         A = -torch.exp(self.log_A_real) + 1j * self.A_imag
         C = self.C[..., 0] + 1j * self.C[..., 1]
-
         dtA = A * dt
         k = torch.arange(L, device=dtA.device, dtype=torch.float32)
         vandermonde = torch.exp(dtA.unsqueeze(-1) * k)
@@ -43,7 +46,6 @@ class S4DLayer(nn.Module):
         self.D = nn.Parameter(torch.ones(d_model))
 
     def forward(self, u):
-        """u: (batch, d_model, L) -> (batch, d_model, L)"""
         L = u.shape[-1]
         K = self.kernel(L)
         n_fft = 2 * L
@@ -55,31 +57,67 @@ class S4DLayer(nn.Module):
 
 
 class S4DBlock(nn.Module):
-    def __init__(self, d_model, d_state=64, ff_mult=2, dropout=0.1):
+    def __init__(self, d_model, d_state=64, dropout=0.1):
         super().__init__()
         self.norm1 = nn.LayerNorm(d_model)
         self.s4d = S4DLayer(d_model, d_state)
         self.norm2 = nn.LayerNorm(d_model)
         self.ff = nn.Sequential(
-            nn.Linear(d_model, d_model * ff_mult),
+            nn.Linear(d_model, d_model * 2),
             nn.GELU(),
             nn.Dropout(dropout),
-            nn.Linear(d_model * ff_mult, d_model),
+            nn.Linear(d_model * 2, d_model),
             nn.Dropout(dropout),
         )
 
     def forward(self, x):
-        """x: (batch, L, d_model)"""
         h = self.s4d(self.norm1(x).transpose(1, 2)).transpose(1, 2)
         x = x + h
         x = x + self.ff(self.norm2(x))
         return x
 
 
-class ParamEncoder(nn.Module):
-    """S4D encoder: mel spectrogram -> synth parameter vector."""
+# ── Mamba block (requires mamba-ssm, cc >= 7.0) ─────────────────────
 
-    def __init__(self, n_mels=128, d_model=64, d_state=64, n_layers=4, dropout=0.2):
+
+class MambaBlock(nn.Module):
+    def __init__(self, d_model, d_state=64, d_conv=4, expand=2, dropout=0.1):
+        super().__init__()
+        self.norm1 = nn.LayerNorm(d_model)
+        self.mamba = Mamba(
+            d_model=d_model, d_state=d_state, d_conv=d_conv, expand=expand,
+        )
+        self.norm2 = nn.LayerNorm(d_model)
+        self.ff = nn.Sequential(
+            nn.Linear(d_model, d_model * 2),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(d_model * 2, d_model),
+            nn.Dropout(dropout),
+        )
+
+    def forward(self, x):
+        x = x + self.mamba(self.norm1(x))
+        x = x + self.ff(self.norm2(x))
+        return x
+
+
+# ── Encoder ──────────────────────────────────────────────────────────
+
+
+def _make_blocks(d_model, d_state, n_layers, dropout):
+    Block = MambaBlock if HAS_MAMBA else S4DBlock
+    return nn.Sequential(*[Block(d_model, d_state, dropout=dropout) for _ in range(n_layers)])
+
+
+class ParamEncoder(nn.Module):
+    """SSM encoder: mel spectrogram -> synth parameter vector.
+
+    Uses Mamba (selective scan) when mamba-ssm is installed, falls back
+    to S4D (diagonal SSM via FFT convolution) on older GPUs.
+    """
+
+    def __init__(self, n_mels=128, d_model=160, d_state=64, n_layers=6, dropout=0.1):
         super().__init__()
         self.n_continuous = N_CONTINUOUS
         self.n_routing = N_ROUTING
@@ -89,9 +127,7 @@ class ParamEncoder(nn.Module):
             nn.Conv1d(n_mels, d_model, 3, padding=1),
             nn.GELU(),
         )
-        self.blocks = nn.Sequential(
-            *[S4DBlock(d_model, d_state, dropout=dropout) for _ in range(n_layers)]
-        )
+        self.blocks = _make_blocks(d_model, d_state, n_layers, dropout)
         self.norm = nn.LayerNorm(d_model)
         self.head = nn.Sequential(
             nn.Linear(d_model, d_model * 2),

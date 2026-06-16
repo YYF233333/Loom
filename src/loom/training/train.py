@@ -83,7 +83,12 @@ def train(args):
     print(f"Train: {n_train}, Val: {n_val}")
 
     # --- model ---
-    model = ParamEncoder().to(DEVICE)
+    model = ParamEncoder(
+        d_model=args.d_model, d_state=args.d_state, n_layers=args.n_layers,
+    ).to(DEVICE)
+    if args.compile:
+        model = torch.compile(model)
+        print("torch.compile enabled")
     n_model_params = sum(p.numel() for p in model.parameters())
     print(f"Encoder params: {n_model_params:,}")
 
@@ -260,5 +265,9 @@ if __name__ == "__main__":
     parser.add_argument("--resume", type=str, default=None,
                         help="Path to checkpoint to resume from (or filename in data-dir)")
     parser.add_argument("--amp", action="store_true", help="Enable mixed precision (fp16)")
+    parser.add_argument("--compile", action="store_true", help="torch.compile the model")
+    parser.add_argument("--d-model", type=int, default=160)
+    parser.add_argument("--d-state", type=int, default=64)
+    parser.add_argument("--n-layers", type=int, default=6)
     args = parser.parse_args()
     train(args)
