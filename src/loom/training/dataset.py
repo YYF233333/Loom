@@ -73,7 +73,10 @@ def generate_dataset(
     gen_batch_size: int = 8,
     save_path: str | None = None,
     device: str = "cpu",
-) -> tuple[torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    import numpy as np
+    from pathlib import Path
+
     n_audio = int(sample_rate * audio_duration)
     synth = SubtractiveSynth(sample_rate, n_audio).to(device)
 
@@ -86,32 +89,64 @@ def generate_dataset(
     ).to(device)
     amp_to_db = T.AmplitudeToDB(top_db=80)
 
-    all_mels = []
-    all_params = []
-    all_audio = []
+    # Probe shapes from a single batch
+    probe_params = random_params(1, device=device)
+    with torch.no_grad():
+        probe_audio = synth(probe_params)
+        probe_mel = amp_to_db(mel_transform(probe_audio))
+    n_mels, n_frames = probe_mel.shape[1], probe_mel.shape[2]
+    n_param_vec = params_to_vector(probe_params).shape[1]
+
+    # Pre-allocate memory-mapped files for zero RAM overhead
+    if save_path:
+        tmp_dir = Path(save_path).parent
+    else:
+        import tempfile
+        tmp_dir = Path(tempfile.gettempdir())
+
+    mel_mm = np.memmap(
+        tmp_dir / "_gen_mels.dat", dtype="float32", mode="w+",
+        shape=(n_samples, n_mels, n_frames),
+    )
+    param_mm = np.memmap(
+        tmp_dir / "_gen_params.dat", dtype="float32", mode="w+",
+        shape=(n_samples, n_param_vec),
+    )
+    audio_mm = np.memmap(
+        tmp_dir / "_gen_audio.dat", dtype="float32", mode="w+",
+        shape=(n_samples, n_audio),
+    )
+
     n_batches = (n_samples + gen_batch_size - 1) // gen_batch_size
+    offset = 0
 
     for i in range(n_batches):
-        bs = min(gen_batch_size, n_samples - i * gen_batch_size)
+        bs = min(gen_batch_size, n_samples - offset)
         params = random_params(bs, device=device)
 
         with torch.no_grad():
             audio = synth(params)
             mel = mel_transform(audio)
             mel_db = amp_to_db(mel)
-            mel_norm = (mel_db + 80.0) / 80.0
-            mel_norm = mel_norm.clamp(0.0, 1.0)
+            mel_norm = ((mel_db + 80.0) / 80.0).clamp(0.0, 1.0)
 
-        all_mels.append(mel_norm.cpu())
-        all_params.append(params_to_vector(params).cpu())
-        all_audio.append(audio.cpu())
+        mel_mm[offset:offset + bs] = mel_norm.cpu().numpy()
+        param_mm[offset:offset + bs] = params_to_vector(params).cpu().numpy()
+        audio_mm[offset:offset + bs] = audio.cpu().numpy()
+        offset += bs
 
         if (i + 1) % 100 == 0:
-            print(f"  generated {(i + 1) * gen_batch_size}/{n_samples}")
+            print(f"  generated {offset}/{n_samples}")
 
-    mels = torch.cat(all_mels, dim=0)[:n_samples]
-    param_vecs = torch.cat(all_params, dim=0)[:n_samples]
-    audio_all = torch.cat(all_audio, dim=0)[:n_samples]
+    # Convert to tensors
+    mels = torch.from_numpy(mel_mm[:n_samples].copy())
+    param_vecs = torch.from_numpy(param_mm[:n_samples].copy())
+    audio_all = torch.from_numpy(audio_mm[:n_samples].copy())
+
+    # Clean up temp files
+    del mel_mm, param_mm, audio_mm
+    for f in ["_gen_mels.dat", "_gen_params.dat", "_gen_audio.dat"]:
+        (tmp_dir / f).unlink(missing_ok=True)
 
     if save_path:
         torch.save({"mels": mels, "params": param_vecs, "audio": audio_all}, save_path)
